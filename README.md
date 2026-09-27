@@ -81,3 +81,58 @@ down, the prompt goes through normally.
 ```bash
 python3 test_guard.py
 ```
+
+## Benchmark: before vs after
+
+`report.py` reads your Claude Code transcripts and reports cost, context
+size and how session-guard was used for a date range. It reads only token
+counts, model names, timestamps and slash-command names, never prompt text.
+
+**1. Keep your history.** Claude Code deletes transcripts after 30 days by
+default. Add this to `~/.claude/settings.json` **before** you start:
+
+```json
+{ "cleanupPeriodDays": 365 }
+```
+
+**2. Save a baseline before installing** (the last 30 days):
+
+```bash
+python3 report.py --since 2026-09-01 --until 2026-09-30 --json before.json
+```
+
+**3. Use session-guard for a few weeks, then:**
+
+```bash
+python3 report.py --since 2026-10-01 --until 2026-10-31 --json after.json
+python3 report.py --compare before.json after.json
+```
+
+Compare **cost per message** and **cost per active day**, not total cost,
+since the amount of work differs between periods.
+
+### A fairer test: on/off weeks
+
+A plain before/after mixes session-guard's effect with everything else that
+changed (different tasks, models, deadlines). Alternating weeks is fairer.
+In `.env`:
+
+```bash
+SESSION_GUARD_OFF=1   # this week: no warnings, no Jev, no status line
+```
+
+Remove it the next week, and repeat for 4+ weeks. Then run the report for
+the ON weeks and the OFF weeks and compare them.
+
+### What the numbers mean
+
+| Metric | Why it matters |
+|---|---|
+| Cost per message | Main outcome: is each message cheaper? |
+| Share of cost at >300k context | Money spent in very long chats (the waste session-guard targets) |
+| Median / 90th percentile context | Are chats staying smaller? |
+| `/handover` used | Are people actually following the advice? |
+| Jev blocks vs. blocks you overrode | Overrides ≈ times Jev was wrong. Lower is better. |
+
+`~/.claude/session-guard/events.jsonl` logs each warning, Jev check, block
+and override (numbers only).

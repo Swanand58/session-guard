@@ -82,4 +82,53 @@ line = statusline.render(sess(320_000), {"jev": 0.93})
 assert "new task? 93%" in line and "/handover now" in line, line
 assert "/handover" not in statusline.render(sess(40_000), {})
 
+# Prices: every model resolves to its own row (no shorter key shadows it), names are normalized,
+# long-context tiers apply above the threshold.
+for k in guard.PRICES:
+    assert guard.price_for(k) == guard.PRICES[k], k
+assert guard.price_for("GPT-5.6 Sol") == guard.PRICES["gpt-5-6-sol"]
+assert guard.price_for("gpt-5.4-mini") == guard.PRICES["gpt-5-4-mini"]
+assert guard.price_for("grok-4.7", 150_000) == guard.PRICES["grok-4-7"]
+assert guard.price_for("grok-4.7", 250_000) == guard.LONG_CONTEXT["grok-4-7"][1]
+assert guard.price_for("claude-opus-4-8-20260101") == guard.PRICES["opus-4-8"]
+
+# Event log: numbers only.
+events = []
+guard.decide({"prompt": "new"}, sess(90_000), {"warned": 500_000}, jev=new_task, events=events)
+assert [e["event"] for e in events] == ["jev", "block"], events
+st = {"warned": 500_000}
+guard.decide({"prompt": "dup"}, sess(90_000), st, jev=new_task)
+events = []
+guard.decide({"prompt": "dup"}, sess(90_000), st, jev=new_task, events=events)
+assert [e["event"] for e in events] == ["override"], events
+events = []
+guard.decide({}, sess(160_000), {}, events=events)
+assert events == [{"event": "warn", "level": 150_000, "ctx": 160_000}], events
+assert all("prompt" not in e for e in events)
+
+# Report: counts prompts, commands and cost inside the period only.
+import report  # noqa: E402
+
+root = Path(tempfile.mkdtemp())
+(root / "proj").mkdir()
+day_in, day_out = "2026-09-10T10:00:00Z", "2026-08-01T10:00:00Z"
+rows = [
+    {**prompt("fix bug"), "timestamp": day_in},
+    {**call("a", 100_000), "timestamp": day_in},
+    {**call("b", 400_000), "timestamp": day_in},
+    {"type": "user", "message": {"content": "<command-name>/handover</command-name>"}, "timestamp": day_in},
+    {**prompt("old work"), "timestamp": day_out},
+    {**call("c", 900_000), "timestamp": day_out},
+]
+(root / "proj" / "s1.jsonl").write_text("\n".join(json.dumps(x) for x in rows))
+ev = root / "events.jsonl"
+ev.write_text(json.dumps({"ts": 1789000000, "event": "warn"}) + "\n")  # 2026-09-10
+from datetime import date  # noqa: E402
+
+r = report.analyse(date(2026, 9, 1), date(2026, 9, 30), projects=root, events_file=ev)
+assert r["prompts"] == 1 and r["handovers"] == 1 and r["sessions"] == 1, r
+assert abs(r["total_cost"] - 0.10) < 1e-9, r  # sonnet-5: 100k + 400k cache reads @ $0.20/M
+assert r["share_cost_over_300k"] == 0.8 and r["sessions_over_300k"] == 1, r
+assert r["guard_warnings"] == 1, r
+
 print("all good")

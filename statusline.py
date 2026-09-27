@@ -10,6 +10,7 @@ kept above ours), so an existing status line keeps working:
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -56,6 +57,9 @@ def main() -> None:
         except Exception:
             pass
     try:
+        guard.load_env(Path(guard.__file__).resolve().parent / ".env")
+        if os.environ.get("SESSION_GUARD_OFF") == "1":
+            return
         data = json.loads(raw)
         transcript = Path(data["transcript_path"])
         if not transcript.exists():
