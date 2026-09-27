@@ -11,6 +11,8 @@ timestamps and slash-command names; never prompt text. Claude Code costs use
 Copilot AI-credit prices from guard.py; Copilot CLI uses the credits it billed.
 """
 
+from __future__ import annotations  # Python 3.9 (macOS default) support
+
 import argparse
 import json
 import statistics
@@ -67,9 +69,10 @@ def analyse(
 
     def in_period(ts) -> bool:
         try:
-            t = datetime.fromtimestamp(ts, tz) if isinstance(ts, (int, float)) else datetime.fromisoformat(ts)
+            # Before Python 3.11, fromisoformat() can't read a trailing 'Z'.
+            t = datetime.fromtimestamp(ts, tz) if isinstance(ts, (int, float)) else datetime.fromisoformat(ts.replace("Z", "+00:00"))
             return start <= t < end
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, AttributeError):  # missing or malformed timestamp
             return False
 
     sessions = defaultdict(lambda: {"messages": 0, "tokens": 0, "cost": 0.0, "peak": 0, "tool": "claude_code"})

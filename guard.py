@@ -10,6 +10,8 @@ context size. This hook reads the session transcript and:
 Stdlib only. Fails open: any error -> exit 0, the prompt goes through.
 """
 
+from __future__ import annotations  # Python 3.9 (macOS default) support
+
 import hashlib
 import json
 import os

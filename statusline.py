@@ -9,6 +9,8 @@ kept above ours), so an existing status line keeps working:
     python3 statusline.py bash /path/to/other-statusline.sh
 """
 
+from __future__ import annotations  # Python 3.9 (macOS default) support
+
 import json
 import os
 import subprocess

@@ -125,3 +125,18 @@ The report reads only token counts, model names, timestamps and
 slash-command names, never your messages. Jev blocks and overrides come from
 `~/.claude/session-guard/events.jsonl` (numbers only). An override is
 roughly a time Jev was wrong.
+
+## Troubleshooting
+
+- **Python 3.9 or newer.** No packages to install.
+- **Windows:** use `python` (or `py`) instead of `python3` in the settings,
+  with a full `C:\...` path. Use Windows Terminal for colours and emoji.
+- **Nothing shows at all?** Run `/hooks` in Claude Code. If your company
+  manages Claude Code settings, it may block personal hooks or status lines.
+- **Status line is empty?** Your Claude Code setup may not record token
+  counts in its transcripts (some Copilot API proxies don't). Check one
+  transcript line for `"usage"`.
+- **Jev never shows (🧭)?** A company firewall may block `api.typesafe.ai`.
+  session-guard then carries on without it.
+- Only Claude Code shows warnings and the status line. For Copilot CLI,
+  `report.py` reads its sessions, but it has no live warnings.

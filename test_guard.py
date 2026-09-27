@@ -1,5 +1,7 @@
 """Run: python3 test_guard.py"""
 
+from __future__ import annotations  # Python 3.9 (macOS default) support
+
 import json
 import os
 import tempfile
@@ -120,6 +122,7 @@ rows = [
     {"type": "user", "message": {"content": "<command-name>/handover</command-name>"}, "timestamp": day_in},
     {**prompt("old work"), "timestamp": day_out},
     {**call("c", 900_000), "timestamp": day_out},
+    {"type": "summary", "summary": "no timestamp on this line"},
 ]
 (root / "proj" / "s1.jsonl").write_text("\n".join(json.dumps(x) for x in rows))
 (root / "proj" / "s1" / "subagents" / "agent-1.jsonl").write_text(json.dumps({**call("d", 50_000), "timestamp": day_in}))
