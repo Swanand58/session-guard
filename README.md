@@ -84,55 +84,39 @@ python3 test_guard.py
 
 ## Benchmark: before vs after
 
-`report.py` reads your Claude Code transcripts and reports cost, context
-size and how session-guard was used for a date range. It reads only token
-counts, model names, timestamps and slash-command names, never prompt text.
-
-**1. Keep your history.** Claude Code deletes transcripts after 30 days by
-default. Add this to `~/.claude/settings.json` **before** you start:
-
-```json
-{ "cleanupPeriodDays": 365 }
-```
-
-**2. Save a baseline before installing** (the last 30 days):
+**1. Before installing session-guard**, save stats for your last 30 days:
 
 ```bash
-python3 report.py --since 2026-09-01 --until 2026-09-30 --json before.json
+python3 report.py before
 ```
 
-**3. Use session-guard for a few weeks, then:**
+**2. Install session-guard and work normally for ~30 days.**
+
+**3. Then:**
 
 ```bash
-python3 report.py --since 2026-10-01 --until 2026-10-31 --json after.json
-python3 report.py --compare before.json after.json
+python3 report.py after
 ```
 
-Compare **cost per message** and **cost per active day**, not total cost,
-since the amount of work differs between periods.
+It covers every day since step 1, so the two periods never overlap, and
+prints them side by side:
 
-### A fairer test: on/off weeks
-
-A plain before/after mixes session-guard's effect with everything else that
-changed (different tasks, models, deadlines). Alternating weeks is fairer.
-In `.env`:
-
-```bash
-SESSION_GUARD_OFF=1   # this week: no warnings, no Jev, no status line
+```
+                                           BEFORE        AFTER   CHANGE
+Tokens per session (median)               333,670      210,400     -37% ✓
+Cost per session (avg, $)                    9.89         4.10     -59% ✓
+Cost per message ($)                        0.857        0.410     -52% ✓
+...
 ```
 
-Remove it the next week, and repeat for 4+ weeks. Then run the report for
-the ON weeks and the OFF weeks and compare them.
+(Example numbers.) `python3 report.py compare` shows it again later. Results
+are saved in `before.json` / `after.json` (git-ignored).
 
-### What the numbers mean
+Compare the **per-session and per-message** numbers: totals depend on how
+much work you did. For tokens per session, look at the **median**: one huge
+session can make the average very large.
 
-| Metric | Why it matters |
-|---|---|
-| Cost per message | Main outcome: is each message cheaper? |
-| Share of cost at >300k context | Money spent in very long chats (the waste session-guard targets) |
-| Median / 90th percentile context | Are chats staying smaller? |
-| `/handover` used | Are people actually following the advice? |
-| Jev blocks vs. blocks you overrode | Overrides ≈ times Jev was wrong. Lower is better. |
-
-`~/.claude/session-guard/events.jsonl` logs each warning, Jev check, block
-and override (numbers only).
+The report reads only token counts, model names, timestamps and
+slash-command names, never your messages. Jev blocks and overrides come from
+`~/.claude/session-guard/events.jsonl` (numbers only). An override is
+roughly a time Jev was wrong.

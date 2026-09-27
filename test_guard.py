@@ -106,11 +106,12 @@ guard.decide({}, sess(160_000), {}, events=events)
 assert events == [{"event": "warn", "level": 150_000, "ctx": 160_000}], events
 assert all("prompt" not in e for e in events)
 
-# Report: counts prompts, commands and cost inside the period only.
+# Report: per-session stats inside the period only; subagent files count toward their parent session.
 import report  # noqa: E402
+from datetime import date  # noqa: E402
 
 root = Path(tempfile.mkdtemp())
-(root / "proj").mkdir()
+(root / "proj" / "s1" / "subagents").mkdir(parents=True)
 day_in, day_out = "2026-09-10T10:00:00Z", "2026-08-01T10:00:00Z"
 rows = [
     {**prompt("fix bug"), "timestamp": day_in},
@@ -121,14 +122,17 @@ rows = [
     {**call("c", 900_000), "timestamp": day_out},
 ]
 (root / "proj" / "s1.jsonl").write_text("\n".join(json.dumps(x) for x in rows))
+(root / "proj" / "s1" / "subagents" / "agent-1.jsonl").write_text(json.dumps({**call("d", 50_000), "timestamp": day_in}))
+(root / "proj" / "s2.jsonl").write_text("\n".join(json.dumps(x) for x in [
+    {**prompt("other"), "timestamp": day_in}, {**call("e", 50_000), "timestamp": day_in}]))
 ev = root / "events.jsonl"
 ev.write_text(json.dumps({"ts": 1789000000, "event": "warn"}) + "\n")  # 2026-09-10
-from datetime import date  # noqa: E402
 
 r = report.analyse(date(2026, 9, 1), date(2026, 9, 30), projects=root, events_file=ev)
-assert r["prompts"] == 1 and r["handovers"] == 1 and r["sessions"] == 1, r
-assert abs(r["total_cost"] - 0.10) < 1e-9, r  # sonnet-5: 100k + 400k cache reads @ $0.20/M
-assert r["share_cost_over_300k"] == 0.8 and r["sessions_over_300k"] == 1, r
-assert r["guard_warnings"] == 1, r
+assert r["sessions"] == 2 and r["messages"] == 2 and r["handovers"] == 1, r
+assert abs(r["cost"] - 0.12) < 1e-9, r  # sonnet-5 cache reads @ $0.20/M: s1 100k+400k+50k, s2 50k
+assert r["cost_per_session"] == 0.06 and r["biggest_session_cost"] == 0.11, r
+assert r["tokens_per_session"] == 300_000, r  # (550k + 50k) / 2
+assert r["sessions_over_300k"] == 1 and r["guard_warnings"] == 1, r
 
 print("all good")
