@@ -134,6 +134,8 @@ def decide(hook: dict, session: dict, state: dict, jev=ask_jev) -> dict | None:
         digest = hashlib.sha256(prompt.encode()).hexdigest()
         if state.get("blocked") != digest:
             p = jev(session["prompts"], prompt, key)
+            if p is not None:
+                state["jev"] = p  # shown by statusline.py
             if p is not None and p >= JEV_THRESHOLD:
                 state["blocked"] = digest
                 return {

@@ -66,4 +66,20 @@ assert guard.decide({"prompt": "y"}, sess(90_000), {"warned": 500_000}, jev=lamb
 os.environ["SESSION_GUARD_JEV"] = "0"
 assert guard.decide({"prompt": "z"}, sess(90_000), {"warned": 500_000}, jev=new_task) is None  # Jev off
 
+# Jev score is saved for the status line.
+os.environ["SESSION_GUARD_JEV"] = "1"
+state = {"warned": 500_000}
+guard.decide({"prompt": "q"}, sess(90_000), state, jev=same_task)
+assert state["jev"] == 0.1
+
+# Status line.
+import statusline  # noqa: E402
+
+assert statusline.render(sess(0), {}) == ""  # nothing before the first reply
+line = statusline.render(sess(172_000), {"jev": 0.1})
+assert "172k ctx" in line and "same task" in line and "/handover soon" in line, line
+line = statusline.render(sess(320_000), {"jev": 0.93})
+assert "new task? 93%" in line and "/handover now" in line, line
+assert "/handover" not in statusline.render(sess(40_000), {})
+
 print("all good")

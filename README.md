@@ -33,7 +33,20 @@ Costs use GitHub Copilot AI-credit rates (edit `PRICES` in `guard.py`).
    }
    ```
 
-3. Keep handover notes out of commits, per repo, without touching `.gitignore`:
+3. (Optional) Live cost meter in the status line at the bottom of Claude Code:
+
+   ```
+   💸 189k ctx ▰▱▱ · $5.39 · last msg $0.44 · 🧭 same task · /handover soon
+   ```
+
+   ```json
+   { "statusLine": { "type": "command", "command": "python3 /FULL/PATH/TO/session-guard/statusline.py" } }
+   ```
+
+   Already have a status line? Put its command after ours and both show,
+   yours on top: `python3 .../statusline.py bash /path/to/yours.sh`
+
+4. Keep handover notes out of commits, per repo, without touching `.gitignore`:
 
    ```bash
    echo ".handover/" >> .git/info/exclude
