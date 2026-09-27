@@ -84,6 +84,11 @@ python3 test_guard.py
 
 ## Benchmark: before vs after
 
+It reads both **Claude Code** (`~/.claude/projects`) and **GitHub Copilot CLI**
+(`~/.copilot/session-state`) sessions. For Copilot CLI it uses the AI credits
+GitHub actually billed, when the session log has them. Copilot CLI only logs
+totals per session, so the context-size rows (marked `*`) cover Claude Code only.
+
 **1. Before installing session-guard**, save stats for your last 30 days:
 
 ```bash

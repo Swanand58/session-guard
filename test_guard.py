@@ -128,11 +128,35 @@ rows = [
 ev = root / "events.jsonl"
 ev.write_text(json.dumps({"ts": 1789000000, "event": "warn"}) + "\n")  # 2026-09-10
 
-r = report.analyse(date(2026, 9, 1), date(2026, 9, 30), projects=root, events_file=ev)
+no_copilot = Path(tempfile.mkdtemp())
+r = report.analyse(date(2026, 9, 1), date(2026, 9, 30), projects=root, events_file=ev, copilot=no_copilot)
 assert r["sessions"] == 2 and r["messages"] == 2 and r["handovers"] == 1, r
 assert abs(r["cost"] - 0.12) < 1e-9, r  # sonnet-5 cache reads @ $0.20/M: s1 100k+400k+50k, s2 50k
 assert r["cost_per_session"] == 0.06 and r["biggest_session_cost"] == 0.11, r
 assert r["tokens_per_session"] == 300_000, r  # (550k + 50k) / 2
 assert r["sessions_over_300k"] == 1 and r["guard_warnings"] == 1, r
+
+# Copilot CLI: billed credits when present, else priced; crashed sessions counted separately.
+cp = Path(tempfile.mkdtemp())
+(cp / "abc").mkdir()
+metrics = {
+    "claude-sonnet-5": {"usage": {"inputTokens": 1_000_000, "cacheReadTokens": 800_000, "outputTokens": 10_000},
+                        "totalNanoAiu": 50_000_000_000},  # billed: 50 credits = $0.50
+    "gpt-6-sol": {"usage": {"inputTokens": 100_000}},  # no billing info: 100k fresh input @ $2/M = $0.20
+}
+(cp / "abc" / "events.jsonl").write_text("\n".join(json.dumps(x) for x in [
+    {"type": "session.start", "timestamp": day_in, "data": {"sessionId": "abc"}},
+    {"type": "user.message", "timestamp": day_in, "data": {"content": "hi"}},
+    {"type": "user.message", "timestamp": day_in, "data": {"content": "more"}},
+    {"type": "session.shutdown", "timestamp": day_in, "data": {"modelMetrics": metrics}},
+    {"type": "session.shutdown", "timestamp": day_out, "data": {"modelMetrics": metrics}},  # outside period
+]))
+(cp / "old.jsonl").write_text(json.dumps({"type": "user.message", "timestamp": day_in, "data": {}}))
+r = report.analyse(date(2026, 9, 1), date(2026, 9, 30), projects=root, events_file=ev, copilot=cp)
+assert r["sessions"] == 3 and r["sessions_copilot_cli"] == 1 and r["sessions_claude_code"] == 2, r
+assert r["copilot_sessions_without_usage"] == 1, r
+assert abs(r["cost"] - (0.12 + 0.50 + 0.20)) < 1e-9, r
+assert r["messages"] == 2 + 2, r  # the crashed session's message has no known cost, so it is left out
+assert r["sessions_over_300k"] == 1 and r["share_cost_over_300k"] == round(0.08 / 0.12, 3), r  # Claude Code only
 
 print("all good")
