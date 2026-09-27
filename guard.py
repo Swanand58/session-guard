@@ -24,7 +24,8 @@ from pathlib import Path
 LEVELS = [150_000, 300_000, 500_000]
 # Jev new-task check only runs above this context size (below it a stray task is cheap).
 JEV_MIN_CONTEXT = 80_000
-JEV_THRESHOLD = 0.7
+# A wrong block costs the user a retype; a missed one costs a few cents. Err towards letting through.
+JEV_THRESHOLD = 0.8
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
 STATE_DIR = Path.home() / ".claude" / "session-guard"
 
@@ -149,7 +150,9 @@ def read_session(transcript: Path) -> dict:
 
 def ask_jev(prompts: list[str], new_prompt: str, api_key: str) -> float | None:
     """Probability (0-1) that new_prompt starts a different task. None on any failure."""
-    earlier = prompts[:1] + prompts[-3:] if len(prompts) > 4 else prompts
+    # Recent requests only: "new task" means different from what you were just doing.
+    # Including the session's first prompt pushed follow-ups in drifted sessions to ~0.7.
+    earlier = prompts[-5:]
     state = "Earlier requests in this coding session:\n" + "\n".join(f"- {p[:300]}" for p in earlier)
     state += f"\n\nNew request:\n{new_prompt[:600]}"
     body = {
