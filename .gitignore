@@ -1,0 +1,4 @@
+.env
+__pycache__/
+.handover/
+.DS_Store
