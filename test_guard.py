@@ -165,4 +165,33 @@ assert abs(r["cost"] - (0.12 + 0.50 + 0.20)) < 1e-9, r
 assert r["messages"] == 2 + 2, r  # the crashed session's message has no known cost, so it is left out
 assert r["sessions_over_300k"] == 1 and r["share_cost_over_300k"] == round(0.08 / 0.12, 3), r  # Claude Code only
 
+# Installer, against a temporary HOME: merges, keeps the old status line, safe twice, uninstall restores.
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+
+home = Path(tempfile.mkdtemp())
+(home / ".claude").mkdir()
+original = {"model": "opus", "statusLine": {"type": "command", "command": "~/my line.sh", "padding": 0},
+            "hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "mine.sh"}]}]}}
+(home / ".claude" / "settings.json").write_text(json.dumps(original))
+run = lambda *a: subprocess.run([sys.executable, "install.py", *a], env={**os.environ, "HOME": str(home)},
+                                capture_output=True, text=True, check=True).stdout
+run(); run()
+s = json.loads((home / ".claude" / "settings.json").read_text())
+cmds = [h["command"] for g in s["hooks"]["UserPromptSubmit"] for h in g["hooks"]]
+assert cmds[0] == "mine.sh" and len(cmds) == 2 and cmds[1].endswith("guard.py"), cmds
+assert s["model"] == "opus" and s["statusLine"]["padding"] == 0, s
+assert s["statusLine"]["command"].endswith("statusline.py sh -c '~/my line.sh'"), s["statusLine"]
+assert (home / ".claude" / "commands" / "handover.md").exists()
+assert len(list((home / ".claude").glob("settings.json.*.bak"))) == 1  # second run changed nothing
+out = run("uninstall")
+assert json.loads((home / ".claude" / "settings.json").read_text()) == original, out
+assert not (home / ".claude" / "commands" / "handover.md").exists()
+home = Path(tempfile.mkdtemp())  # fresh Mac: no ~/.claude yet
+out = run()
+assert "Jev new-task check is OFF" in out, out
+assert json.loads((home / ".claude" / "settings.json").read_text())["statusLine"]["command"].endswith("statusline.py")
+run("uninstall")
+assert json.loads((home / ".claude" / "settings.json").read_text()) == {}
+
 print("all good")

@@ -15,13 +15,35 @@ Costs use GitHub Copilot AI-credit rates (edit `PRICES` in `guard.py`).
 
 ## Install
 
-1. Copy the commands:
+```bash
+curl -fsSL https://raw.githubusercontent.com/Swanand58/session-guard/main/install.sh | bash
+```
 
-   ```bash
-   mkdir -p ~/.claude/commands && cp commands/*.md ~/.claude/commands/
-   ```
+That downloads session-guard to `~/.session-guard` and adds it to
+`~/.claude/settings.json` (a backup is saved next to it first). It adds the
+warning hook, a live cost meter in the status line, and the `/handover` and
+`/continue` commands. Restart Claude Code afterwards.
 
-2. Add the hook to `~/.claude/settings.json` (merge with existing `hooks`):
+```
+💸 189k ctx ▰▱▱ · $5.39 · last msg $0.44 · 🧭 same task · /handover soon
+```
+
+- Already have a status line? It keeps showing, above ours.
+- Run the same command again to update. It never adds anything twice.
+- From a clone instead: `python3 install.py`.
+- Uninstall: `python3 ~/.session-guard/install.py uninstall`. This puts your
+  old status line back.
+
+Keep handover notes out of commits, per repo, without touching `.gitignore`:
+
+```bash
+echo ".handover/" >> .git/info/exclude
+```
+
+<details><summary>Manual install (e.g. Windows)</summary>
+
+1. Copy `commands/*.md` to `~/.claude/commands/`.
+2. Merge into `~/.claude/settings.json`:
 
    ```json
    {
@@ -29,45 +51,35 @@ Costs use GitHub Copilot AI-credit rates (edit `PRICES` in `guard.py`).
        "UserPromptSubmit": [
          { "hooks": [{ "type": "command", "command": "python3 /FULL/PATH/TO/session-guard/guard.py", "timeout": 10 }] }
        ]
-     }
+     },
+     "statusLine": { "type": "command", "command": "python3 /FULL/PATH/TO/session-guard/statusline.py" }
    }
    ```
 
-3. (Optional) Live cost meter in the status line at the bottom of Claude Code:
+   To keep an existing status line, put its command after ours:
+   `python3 .../statusline.py bash /path/to/yours.sh`
 
-   ```
-   💸 189k ctx ▰▱▱ · $5.39 · last msg $0.44 · 🧭 same task · /handover soon
-   ```
-
-   ```json
-   { "statusLine": { "type": "command", "command": "python3 /FULL/PATH/TO/session-guard/statusline.py" } }
-   ```
-
-   Already have a status line? Put its command after ours and both show,
-   yours on top: `python3 .../statusline.py bash /path/to/yours.sh`
-
-4. Keep handover notes out of commits, per repo, without touching `.gitignore`:
-
-   ```bash
-   echo ".handover/" >> .git/info/exclude
-   ```
+</details>
 
 ## Jev new-task check (optional, off by default)
 
-```bash
-export TYPESAFE_API_KEY=...
-export SESSION_GUARD_JEV=1
+Add these two lines to `~/.session-guard/.env` (in a clone: `.env` next to
+`guard.py`, which is git-ignored):
+
+```
+TYPESAFE_API_KEY=your-key
+SESSION_GUARD_JEV=1
 ```
 
-Or put those two lines in a `.env` file next to `guard.py` (git-ignored).
+Or set them as environment variables (`export TYPESAFE_API_KEY=...`) instead.
 
 On macOS with Python from python.org, HTTPS calls fail with
 `CERTIFICATE_VERIFY_FAILED` until you run
 `/Applications/Python 3.12/Install Certificates.command` once. The Jev check
 then silently does nothing, so run that, or point the hook at Homebrew's `python3`.
 
-Only runs when context is above 80k tokens. It sends your first prompt, last
-3 prompts and the new prompt (truncated) to TypeSafe's API. **Check your
+Only runs when context is above 80k tokens. It sends your last 5 prompts and
+the new prompt (truncated) to TypeSafe's API. **Check your
 company's policy before enabling this on work code.** If Jev is slow (>4s) or
 down, the prompt goes through normally.
 
