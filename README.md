@@ -140,3 +140,7 @@ roughly a time Jev was wrong.
   session-guard then carries on without it.
 - Only Claude Code shows warnings and the status line. For Copilot CLI,
   `report.py` reads its sessions, but it has no live warnings.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
