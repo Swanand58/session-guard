@@ -33,6 +33,8 @@ t = transcript([
     call("a", 100_000), call("a", 100_000),  # same response split over two lines
     {"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok"}]}},
     prompt("<command-name>/model</command-name>"),
+    prompt("[Request interrupted by user]"),
+    {"type": "user", "message": {"content": [{"type": "text", "text": "[Request interrupted by user for tool use]"}]}},
     prompt("now also fix logout"),
     call("b", 200_000, "claude-opus-5.5"),
 ])
@@ -120,6 +122,7 @@ rows = [
     {**call("a", 100_000), "timestamp": day_in},
     {**call("b", 400_000), "timestamp": day_in},
     {"type": "user", "message": {"content": "<command-name>/handover</command-name>"}, "timestamp": day_in},
+    {**prompt("[Request interrupted by user]"), "timestamp": day_in},  # not a message
     {**prompt("old work"), "timestamp": day_out},
     {**call("c", 900_000), "timestamp": day_out},
     {"type": "summary", "summary": "no timestamp on this line"},

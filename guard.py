@@ -102,13 +102,13 @@ def price_for(model: str, context: int = 0) -> tuple:
 
 
 def prompt_text(entry: dict) -> str | None:
-    """Return the text of a real user prompt, or None for tool results / meta lines."""
+    """Return the text of a real user prompt, or None for tool results / meta / interrupt lines."""
     if entry.get("type") != "user" or entry.get("isMeta") or entry.get("isSidechain"):
         return None
     content = (entry.get("message") or {}).get("content")
     if isinstance(content, list):
         content = " ".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
-    if not isinstance(content, str) or not content.strip() or content.lstrip().startswith("<"):
+    if not isinstance(content, str) or not content.strip() or content.lstrip().startswith(("<", "[Request interrupted")):
         return None
     return content.strip()
 
