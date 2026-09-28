@@ -63,21 +63,23 @@ echo ".handover/" >> .git/info/exclude
 
 ## Jev new-task check (optional, off by default)
 
-```bash
-export TYPESAFE_API_KEY=...
-export SESSION_GUARD_JEV=1
+Add these two lines to `~/.session-guard/.env` (in a clone: `.env` next to
+`guard.py`, which is git-ignored):
+
+```
+TYPESAFE_API_KEY=your-key
+SESSION_GUARD_JEV=1
 ```
 
-Or put those two lines in `~/.session-guard/.env` (or `.env` next to `guard.py`
-in a clone; it is git-ignored).
+Or set them as environment variables (`export TYPESAFE_API_KEY=...`) instead.
 
 On macOS with Python from python.org, HTTPS calls fail with
 `CERTIFICATE_VERIFY_FAILED` until you run
 `/Applications/Python 3.12/Install Certificates.command` once. The Jev check
 then silently does nothing, so run that, or point the hook at Homebrew's `python3`.
 
-Only runs when context is above 80k tokens. It sends your first prompt, last
-3 prompts and the new prompt (truncated) to TypeSafe's API. **Check your
+Only runs when context is above 80k tokens. It sends your last 5 prompts and
+the new prompt (truncated) to TypeSafe's API. **Check your
 company's policy before enabling this on work code.** If Jev is slow (>4s) or
 down, the prompt goes through normally.
 
