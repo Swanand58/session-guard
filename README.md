@@ -87,6 +87,9 @@ down, the prompt goes through normally.
 
 1. Work normally. A 💸 warning appears when the session gets big.
 2. At a good stopping point: `/handover`, then `/clear`, then `/continue`.
+3. The note records the old session's id. If the new session needs a detail the
+   note left out, it searches the old transcript (up to 5 short matches):
+   `python3 ~/.claude/session-guard/recall.py <session-id> "a few words"`
 
 ## Test
 

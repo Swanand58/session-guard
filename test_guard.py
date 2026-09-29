@@ -165,6 +165,29 @@ assert abs(r["cost"] - (0.12 + 0.50 + 0.20)) < 1e-9, r
 assert r["messages"] == 2 + 2, r  # the crashed session's message has no known cost, so it is left out
 assert r["sessions_over_300k"] == 1 and r["share_cost_over_300k"] == round(0.08 / 0.12, 3), r  # Claude Code only
 
+# Recall: user prompts + Claude's text only, best match first, newer wins ties; current id = newest transcript.
+import recall  # noqa: E402
+t = transcript([
+    {**prompt("use sqlite for the cache"), "timestamp": "2026-09-01T10:00:00Z"},
+    {"type": "assistant", "message": {"content": [{"type": "text", "text": "Chose sqlite because redis needs a server."},
+                                                  {"type": "tool_use", "name": "Bash", "input": {"command": "redis-cli"}}]}},
+    {"type": "user", "message": {"content": [{"type": "tool_result", "content": "redis sqlite cache"}]}},
+    prompt("switch the cache to redis after all"),
+])
+hits = recall.search(t, "why redis cache")
+assert [h[1] for h in hits] == ["user", "claude", "user"], hits  # 2 words, 1 word (newer first), tool lines skipped
+assert hits[2][0] == "2026-09-01 10:00", hits
+assert recall.search(t, "nothing matches") == []
+proj = Path(tempfile.mkdtemp())
+recall.PROJECTS = proj
+(proj / "-tmp-my-app").mkdir()
+for name, mtime in (("old", 1), ("new", 2)):
+    f = proj / "-tmp-my-app" / f"{name}.jsonl"
+    f.write_text("")
+    os.utime(f, (mtime, mtime))
+assert recall.current_id("/tmp/my.app") == "new"
+assert recall.current_id("/tmp/other") is None
+
 # Installer, against a temporary HOME: merges, keeps the old status line, safe twice, uninstall restores.
 import subprocess  # noqa: E402
 import sys  # noqa: E402
@@ -183,10 +206,12 @@ assert cmds[0] == "mine.sh" and len(cmds) == 2 and cmds[1].endswith("guard.py"),
 assert s["model"] == "opus" and s["statusLine"]["padding"] == 0, s
 assert s["statusLine"]["command"].endswith("statusline.py sh -c '~/my line.sh'"), s["statusLine"]
 assert (home / ".claude" / "commands" / "handover.md").exists()
+assert (home / ".claude" / "session-guard" / "recall.py").resolve() == Path("recall.py").resolve()
 assert len(list((home / ".claude").glob("settings.json.*.bak"))) == 1  # second run changed nothing
 out = run("uninstall")
 assert json.loads((home / ".claude" / "settings.json").read_text()) == original, out
 assert not (home / ".claude" / "commands" / "handover.md").exists()
+assert not (home / ".claude" / "session-guard" / "recall.py").is_symlink()
 home = Path(tempfile.mkdtemp())  # fresh Mac: no ~/.claude yet
 out = run()
 assert "Jev new-task check is OFF" in out, out
