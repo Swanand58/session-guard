@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Add session-guard to Claude Code, or take it out again.
 
-    python3 install.py              # hook, status line, /handover and /continue
+    python3 install.py              # hook, status line, /handover, /continue and recall.py
     python3 install.py uninstall    # undo it
 
 Safe to run twice. Backs up ~/.claude/settings.json before changing it.
@@ -23,6 +23,7 @@ HERE = Path(__file__).resolve().parent
 CLAUDE = Path.home() / ".claude"
 SETTINGS = CLAUDE / "settings.json"
 SAVED_STATUSLINE = CLAUDE / "session-guard" / "original-statusline.json"  # restored by uninstall
+RECALL = CLAUDE / "session-guard" / "recall.py"  # fixed path the commands call; links back here
 HOOK = f"python3 {shlex.quote(str(HERE / 'guard.py'))}"
 STATUSLINE = f"python3 {shlex.quote(str(HERE / 'statusline.py'))}"
 
@@ -69,6 +70,10 @@ def install() -> None:
         settings["statusLine"] = {**old, "type": "command", "command": STATUSLINE + wrap}
     save(settings, before)
 
+    RECALL.parent.mkdir(parents=True, exist_ok=True)
+    RECALL.unlink(missing_ok=True)
+    RECALL.symlink_to(HERE / "recall.py")
+
     (CLAUDE / "commands").mkdir(parents=True, exist_ok=True)
     for src in sorted((HERE / "commands").glob("*.md")):
         dst = CLAUDE / "commands" / src.name
@@ -105,6 +110,8 @@ def uninstall() -> None:
         else:
             del settings["statusLine"]
     SAVED_STATUSLINE.unlink(missing_ok=True)
+    if RECALL.is_symlink() and RECALL.resolve() == (HERE / "recall.py").resolve():
+        RECALL.unlink()
     save(settings, before)
 
     for src in (HERE / "commands").glob("*.md"):
