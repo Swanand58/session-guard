@@ -44,6 +44,52 @@ assert s["context"] == 200_000
 assert abs(s["total"] - (0.02 + 0.04)) < 1e-9, s["total"]  # sonnet-5 100k@0.20 + opus-5.5 200k@0.20
 assert abs(s["last_msg"] - 0.04) < 1e-9
 assert guard.price_for("claude-opus-5-5-20260901") == guard.PRICES["opus-5-5"]
+
+# Subagents: their cost counts (total, agents, and last message if they ran after the last prompt),
+# their context does not. Covers both the subagents/ folder and old inline isSidechain lines.
+at = lambda row, ts: {**row, "timestamp": ts}
+t = transcript([
+    at(prompt("first"), "2026-09-10T10:00:00Z"),
+    at(call("a", 100_000), "2026-09-10T10:00:05Z"),
+    at(prompt("second"), "2026-09-10T11:00:00Z"),
+    at(call("b", 120_000), "2026-09-10T11:00:05Z"),
+    at({**call("side", 50_000), "isSidechain": True}, "2026-09-10T11:00:06Z"),
+])
+agents_dir = t.with_suffix("") / "subagents"
+agents_dir.mkdir(parents=True)
+(agents_dir / "agent-old.jsonl").write_text(json.dumps(at({**call("x", 300_000), "isSidechain": True}, "2026-09-10T10:30:00Z")))
+(agents_dir / "agent-new.jsonl").write_text("\n".join(json.dumps(at({**call(i, c), "isSidechain": True}, "2026-09-10T11:30:00Z"))
+                                                      for i, c in (("y", 100_000), ("z", 200_000))))
+s = guard.read_session(t)
+assert s["context"] == 120_000, s  # the main session's own context, not a subagent's
+assert abs(s["agents"] - (0.01 + 0.06 + 0.06)) < 1e-9, s  # sonnet-5 cache reads: 50k + 300k + 300k
+assert abs(s["total"] - (0.02 + 0.024 + 0.13)) < 1e-9, s
+assert abs(s["last_msg"] - (0.024 + 0.01 + 0.06)) < 1e-9, s  # agent-old ran before the last prompt
+a = guard.read_agent(agents_dir / "agent-new.jsonl")
+assert a["context"] == 200_000 and abs(a["total"] - 0.06) < 1e-9, a
+
+# Subagent guard: tell it to wrap up once per level.
+state, events = {}, []
+assert guard.decide_agent({"context": 100_000, "total": 0.1}, state, events) is None and state == {}
+out = guard.decide_agent({"context": 160_000, "total": 0.5}, state, events)
+assert "160k" in out["hookSpecificOutput"]["additionalContext"], out
+assert guard.decide_agent({"context": 170_000, "total": 0.6}, state, events) is None  # same level: quiet
+assert events == [{"event": "agent_warn", "level": 150_000, "ctx": 160_000}], events
+
+# The hook itself, with a temporary HOME: quiet for the main session's tool calls, speaks inside a big subagent.
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+
+hook_home = Path(tempfile.mkdtemp())
+def run_hook(**extra):
+    payload = {"session_id": "s", "transcript_path": str(t), "hook_event_name": "PostToolUse", **extra}
+    return subprocess.run([sys.executable, "guard.py"], input=json.dumps(payload), capture_output=True, text=True,
+                          env={**os.environ, "HOME": str(hook_home)}).stdout
+assert run_hook() == ""
+assert "200k" in run_hook(agent_id="new") and run_hook(agent_id="new") == ""  # once
+assert run_hook(agent_id="missing") == ""
+log = (hook_home / ".claude" / "session-guard" / "events.jsonl").read_text()
+assert log.count("agent_warn") == 1 and "prompt" not in log, log
 assert guard.price_for("some-new-model") == guard.DEFAULT_PRICE
 
 # Levels: warn once per level, re-arm after compaction.
@@ -85,6 +131,7 @@ assert "172k ctx" in line and "same task" in line and "/handover soon" in line, 
 line = statusline.render(sess(320_000), {"jev": 0.93})
 assert "new task? 93%" in line and "/handover now" in line, line
 assert "/handover" not in statusline.render(sess(40_000), {})
+assert "agents" not in line and "$1.00 (agents $0.25)" in statusline.render({**sess(172_000), "agents": 0.25}, {})
 
 # Prices: every model resolves to its own row (no shorter key shadows it), names are normalized,
 # long-context tiers apply above the threshold.
@@ -141,6 +188,7 @@ assert abs(r["cost"] - 0.12) < 1e-9, r  # sonnet-5 cache reads @ $0.20/M: s1 100
 assert r["cost_per_session"] == 0.06 and r["biggest_session_cost"] == 0.11, r
 assert r["tokens_per_session"] == 300_000, r  # (550k + 50k) / 2
 assert r["sessions_over_300k"] == 1 and r["guard_warnings"] == 1, r
+assert r["subagent_runs"] == 1 and r["share_cost_subagents"] == round(0.01 / 0.12, 3), r
 
 # Copilot CLI: billed credits when present, else priced; crashed sessions counted separately.
 cp = Path(tempfile.mkdtemp())
@@ -189,9 +237,6 @@ assert recall.current_id("/tmp/my.app") == "new"
 assert recall.current_id("/tmp/other") is None
 
 # Installer, against a temporary HOME: merges, keeps the old status line, safe twice, uninstall restores.
-import subprocess  # noqa: E402
-import sys  # noqa: E402
-
 home = Path(tempfile.mkdtemp())
 (home / ".claude").mkdir()
 original = {"model": "opus", "statusLine": {"type": "command", "command": "~/my line.sh", "padding": 0},
@@ -203,6 +248,7 @@ run(); run()
 s = json.loads((home / ".claude" / "settings.json").read_text())
 cmds = [h["command"] for g in s["hooks"]["UserPromptSubmit"] for h in g["hooks"]]
 assert cmds[0] == "mine.sh" and len(cmds) == 2 and cmds[1].endswith("guard.py"), cmds
+assert [h["command"] for g in s["hooks"]["PostToolUse"] for h in g["hooks"]] == cmds[1:], s["hooks"]  # subagent guard
 assert s["model"] == "opus" and s["statusLine"]["padding"] == 0, s
 assert s["statusLine"]["command"].endswith("statusline.py sh -c '~/my line.sh'"), s["statusLine"]
 assert (home / ".claude" / "commands" / "handover.md").exists()

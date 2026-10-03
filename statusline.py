@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Claude Code status line: live session cost meter.
 
-    💸 172k ctx ▰▰▱▱ · $4.61 · last msg $0.28 · 🧭 same task · /handover soon
+    💸 172k ctx ▰▰▱▱ · $4.61 (agents $0.67) · last msg $0.28 · 🧭 same task · /handover soon
 
 Any arguments are run as another status line command first (its output is
 kept above ours), so an existing status line keeps working:
@@ -31,7 +31,7 @@ def render(session: dict, state: dict) -> str:
     bar = "▰" * reached + "▱" * (len(guard.LEVELS) - reached)
     parts = [
         f"{color}💸 {ctx / 1000:.0f}k ctx {bar}{RESET}",
-        f"${session['total']:.2f}",
+        f"${session['total']:.2f}" + (f" (agents ${session['agents']:.2f})" if session.get("agents", 0) >= 0.005 else ""),
         f"last msg ${session['last_msg']:.2f}",
     ]
     jev = state.get("jev")

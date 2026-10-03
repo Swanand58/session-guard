@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Claude Code UserPromptSubmit hook: warn when a session gets expensive.
+"""Claude Code hook: warn when a session gets expensive.
 
 Every message re-sends the whole session, so cost per message grows with
-context size. This hook reads the session transcript and:
+context size. On UserPromptSubmit this hook reads the session transcript and:
   - warns once each time context crosses a level (see LEVELS)
   - optionally asks Jev whether the new prompt starts a different task;
     if so, blocks it once and suggests /handover + a new session.
+On PostToolUse inside a subagent it tells the subagent to wrap up when the
+subagent's own context crosses a level.
 
 Stdlib only. Fails open: any error -> exit 0, the prompt goes through.
 """
@@ -113,39 +115,81 @@ def prompt_text(entry: dict) -> str | None:
     return content.strip()
 
 
-def read_session(transcript: Path) -> dict:
-    """Context size of the latest call, cost so far, cost of the last message, user prompts."""
-    seen = set()
-    total = last_msg = 0.0
-    context = 0
-    prompts = []
-    for line in transcript.open(errors="ignore"):
+def entries(path: Path):
+    """Parsed lines of a transcript file. Unreadable lines are skipped."""
+    for line in path.open(errors="ignore"):
         try:
-            e = json.loads(line)
+            yield json.loads(line)
         except ValueError:
             continue
+
+
+def api_call(e: dict, seen: set) -> tuple | None:
+    """(context tokens, cost) of an API response line, or None if it has no usage or was already counted."""
+    msg = e.get("message") or {}
+    usage = msg.get("usage") if isinstance(msg, dict) else None
+    if not usage:
+        return None
+    # One API response is split over several lines that repeat the same usage.
+    key = msg.get("id") or e.get("requestId") or e.get("uuid")
+    if key in seen:
+        return None
+    seen.add(key)
+    tin, tread, twrite, tout = (usage.get(k) or 0 for k in (
+        "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"))
+    context = tin + tread + twrite
+    p = price_for(msg.get("model"), context)
+    return context, (tin * p[0] + tread * p[1] + twrite * p[2] + tout * p[3]) / 1e6
+
+
+def read_session(transcript: Path) -> dict:
+    """Context size of the latest call, cost so far, cost of the last message, user prompts.
+
+    Costs include subagents ("agents" is their part). Context does not: a subagent has its own.
+    """
+    seen = set()
+    total = last_msg = agents = 0.0
+    context = 0
+    prompts = []
+    last_prompt_at = ""
+    for e in entries(transcript):
         text = prompt_text(e)
         if text:
             prompts.append(text)
             last_msg = 0.0
+            last_prompt_at = str(e.get("timestamp") or "")
             continue
-        msg = e.get("message") or {}
-        usage = msg.get("usage") if isinstance(msg, dict) else None
-        if not usage or e.get("isSidechain"):
+        call = api_call(e, seen)
+        if not call:
             continue
-        # One API response is split over several lines that repeat the same usage.
-        key = msg.get("id") or e.get("requestId") or e.get("uuid")
-        if key in seen:
-            continue
-        seen.add(key)
-        tin, tread, twrite, tout = (usage.get(k) or 0 for k in (
-            "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"))
-        context = tin + tread + twrite
-        p = price_for(msg.get("model"), context)
-        cost = (tin * p[0] + tread * p[1] + twrite * p[2] + tout * p[3]) / 1e6
-        total += cost
-        last_msg += cost
-    return {"context": context, "total": total, "last_msg": last_msg, "prompts": prompts}
+        if e.get("isSidechain"):  # older Claude Code wrote subagent calls into the main transcript
+            agents += call[1]
+        else:
+            context = call[0]
+        total += call[1]
+        last_msg += call[1]
+    # Newer Claude Code: one file per subagent, in <session>/subagents/ next to the transcript.
+    for f in (transcript.with_suffix("") / "subagents").glob("*.jsonl"):
+        for e in entries(f):
+            call = api_call(e, seen)
+            if not call:
+                continue
+            agents += call[1]
+            total += call[1]
+            if last_prompt_at and str(e.get("timestamp") or "") >= last_prompt_at:  # ISO times sort as text
+                last_msg += call[1]
+    return {"context": context, "total": total, "last_msg": last_msg, "agents": agents, "prompts": prompts}
+
+
+def read_agent(transcript: Path) -> dict:
+    """Context size of a subagent's latest call and its cost so far."""
+    seen = set()
+    context, total = 0, 0.0
+    for e in entries(transcript):
+        call = api_call(e, seen)
+        if call:
+            context, total = call[0], total + call[1]
+    return {"context": context, "total": total}
 
 
 def ask_jev(prompts: list[str], new_prompt: str, api_key: str) -> float | None:
@@ -219,6 +263,25 @@ def decide(hook: dict, session: dict, state: dict, jev=ask_jev, events: list | N
     return None
 
 
+def decide_agent(agent: dict, state: dict, events: list | None = None) -> dict | None:
+    """Same levels as decide(), for a subagent. It cannot hand over, so ask it to wrap up."""
+    events = [] if events is None else events
+    ctx = agent["context"]
+    crossed = [lvl for lvl in LEVELS if ctx >= lvl and lvl > state.get("warned", 0)]
+    if not crossed:
+        return None
+    state["warned"] = crossed[-1]
+    events.append({"event": "agent_warn", "level": crossed[-1], "ctx": ctx})
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": f"💸 session-guard: this subagent's context is {ctx / 1000:.0f}k tokens "
+            f"(~${agent['total']:.2f} so far). Every further step re-sends all of it. Finish the step you "
+            "are on, then stop and report what you found and what is still left to do.",
+        }
+    }
+
+
 def load_env(path: Path) -> None:
     """Read KEY=value lines from a .env next to this script. Real env vars win."""
     if path.exists():
@@ -234,15 +297,26 @@ def main() -> None:
         if os.environ.get("SESSION_GUARD_OFF") == "1":  # control weeks for before/after comparisons
             return
         hook = json.load(sys.stdin)
+        agent = hook.get("agent_id")  # set only when the hook fires inside a subagent
+        if hook.get("hook_event_name") == "PostToolUse" and not agent:
+            return  # the main session's own tool calls: the prompt hook covers it
         transcript = Path(hook["transcript_path"])
+        name = hook["session_id"]
+        if agent:
+            transcript = transcript.with_suffix("") / "subagents" / f"agent-{agent}.jsonl"
+            name += f"-{agent}"  # own state file: subagents run in parallel
         if not transcript.exists():
             return
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        state_file = STATE_DIR / f"{hook['session_id']}.json"
+        state_file = STATE_DIR / f"{name}.json"
         state = json.loads(state_file.read_text()) if state_file.exists() else {}
         events = []
-        out = decide(hook, read_session(transcript), state, events=events)
-        state_file.write_text(json.dumps(state))
+        if agent:
+            out = decide_agent(read_agent(transcript), state, events)
+        else:
+            out = decide(hook, read_session(transcript), state, events=events)
+        if state:
+            state_file.write_text(json.dumps(state))
         # Numbers only, never prompt text: read by report.py for before/after comparisons.
         with (STATE_DIR / "events.jsonl").open("a") as log:
             for e in events:
