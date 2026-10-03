@@ -48,7 +48,10 @@ METRICS = [
     ("handovers", "/handover used", None),
     ("clears", "/clear used", None),
     ("compacts", "/compact used", None),
+    ("subagent_runs", "Subagent runs *", None),
+    ("share_cost_subagents", "Share of cost in subagents *", None),
     ("guard_warnings", "session-guard warnings", None),
+    ("subagent_warnings", "  to subagents", None),
     ("jev_blocks", "Jev blocks", None),
     ("jev_overrides", "Jev blocks you overrode", None),
 ]
@@ -78,11 +81,13 @@ def analyse(
     sessions = defaultdict(lambda: {"messages": 0, "tokens": 0, "cost": 0.0, "peak": 0, "tool": "claude_code"})
     commands = Counter()
     by_model = Counter()
-    cost_over_300k = 0.0
+    cost_over_300k = agent_cost = 0.0
+    agent_runs = set()
     copilot_no_usage = 0
 
     for f in projects.glob("*/**/*.jsonl"):  # inside a project folder, including subagents/
         s = sessions[session_id(f, projects)]
+        is_agent = "subagents" in f.relative_to(projects).parts
         seen = set()
         for line in f.open(errors="ignore"):
             try:
@@ -113,6 +118,9 @@ def analyse(
             s["cost"] += cost
             s["peak"] = max(s["peak"], ctx)
             by_model[msg.get("model") or "?"] += cost
+            if is_agent:
+                agent_cost += cost
+                agent_runs.add(f)
             if ctx > 300_000:
                 cost_over_300k += cost
 
@@ -190,7 +198,10 @@ def analyse(
         "handovers": commands["handover"],
         "clears": commands["clear"],
         "compacts": commands["compact"],
+        "subagent_runs": len(agent_runs),
+        "share_cost_subagents": round(agent_cost / measured_cost, 3) if measured_cost else 0,
         "guard_warnings": events["warn"],
+        "subagent_warnings": events["agent_warn"],
         "jev_blocks": events["block"],
         "jev_overrides": events["override"],
         "cost_by_model": {m: round(c, 2) for m, c in by_model.most_common() if c},

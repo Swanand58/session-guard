@@ -9,6 +9,8 @@ message. session-guard:
   with the dollar cost so far and the cost of your last message
 - **(optional, Jev)** spots when you start a *new task* in a big session and
   stops that prompt once, so you can hand over to a fresh session instead
+- **counts subagents**: their cost is in every number, and a subagent that
+  grows past the same levels is told to wrap up and report back
 - gives you **/handover** (save a short note) and **/continue** (resume from it)
 
 Costs use GitHub Copilot AI-credit rates (edit `PRICES` in `guard.py`).
@@ -50,6 +52,9 @@ echo ".handover/" >> .git/info/exclude
      "hooks": {
        "UserPromptSubmit": [
          { "hooks": [{ "type": "command", "command": "python3 /FULL/PATH/TO/session-guard/guard.py", "timeout": 10 }] }
+       ],
+       "PostToolUse": [
+         { "hooks": [{ "type": "command", "command": "python3 /FULL/PATH/TO/session-guard/guard.py", "timeout": 10 }] }
        ]
      },
      "statusLine": { "type": "command", "command": "python3 /FULL/PATH/TO/session-guard/statusline.py" }
@@ -90,6 +95,22 @@ down, the prompt goes through normally.
 3. The note records the old session's id. If the new session needs a detail the
    note left out, it searches the old transcript (up to 5 short matches):
    `python3 ~/.claude/session-guard/recall.py <session-id> "a few words"`
+
+## Subagents
+
+A subagent starts with a fresh context and has its own transcript, so:
+
+- **Cost:** the warnings and the status line add subagent cost to the session
+  total. The status line shows their part: `$4.61 (agents $0.67)`. The context
+  number stays the main session's own, because that is what gets re-sent.
+- **Size:** if a subagent's own context passes 150k, 300k or 500k tokens, it
+  gets one note per level telling it to finish its step and report back. A
+  subagent cannot hand over, so that is the cheapest way out. This uses a
+  `PostToolUse` hook, which also runs (and exits straight away) on the main
+  session's tool calls.
+- **Report:** `report.py` shows subagent runs and their share of the cost.
+
+Already installed? Run the install command again to add the subagent hook.
 
 ## Test
 

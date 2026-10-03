@@ -25,6 +25,7 @@ SETTINGS = CLAUDE / "settings.json"
 SAVED_STATUSLINE = CLAUDE / "session-guard" / "original-statusline.json"  # restored by uninstall
 RECALL = CLAUDE / "session-guard" / "recall.py"  # fixed path the commands call; links back here
 HOOK = f"python3 {shlex.quote(str(HERE / 'guard.py'))}"
+EVENTS = ("UserPromptSubmit", "PostToolUse")  # PostToolUse: guard.py watches subagents
 STATUSLINE = f"python3 {shlex.quote(str(HERE / 'statusline.py'))}"
 
 
@@ -59,9 +60,10 @@ def save(settings: dict, before: str) -> None:
 def install() -> None:
     settings = load()
     before = json.dumps(settings)
-    groups = settings.setdefault("hooks", {}).setdefault("UserPromptSubmit", [])
-    if not any(ours(h.get("command", ""), "guard.py") for g in groups for h in g.get("hooks", [])):
-        groups.append({"hooks": [{"type": "command", "command": HOOK, "timeout": 10}]})
+    for event in EVENTS:
+        groups = settings.setdefault("hooks", {}).setdefault(event, [])
+        if not any(ours(h.get("command", ""), "guard.py") for g in groups for h in g.get("hooks", [])):
+            groups.append({"hooks": [{"type": "command", "command": HOOK, "timeout": 10}]})
     old = settings.get("statusLine") or {}
     if not ours(old.get("command", ""), "statusline.py"):
         SAVED_STATUSLINE.parent.mkdir(parents=True, exist_ok=True)
@@ -95,12 +97,13 @@ def uninstall() -> None:
     settings = load()
     before = json.dumps(settings)
     hooks = settings.get("hooks") or {}
-    groups = hooks.get("UserPromptSubmit") or []
-    for g in groups:
-        g["hooks"] = [h for h in g.get("hooks", []) if not ours(h.get("command", ""), "guard.py")]
-    groups[:] = [g for g in groups if g.get("hooks")]
-    if "UserPromptSubmit" in hooks and not groups:
-        del hooks["UserPromptSubmit"]
+    for event in EVENTS:
+        groups = hooks.get(event) or []
+        for g in groups:
+            g["hooks"] = [h for h in g.get("hooks", []) if not ours(h.get("command", ""), "guard.py")]
+        groups[:] = [g for g in groups if g.get("hooks")]
+        if event in hooks and not groups:
+            del hooks[event]
     if "hooks" in settings and not hooks:
         del settings["hooks"]
     if ours((settings.get("statusLine") or {}).get("command", ""), "statusline.py"):
