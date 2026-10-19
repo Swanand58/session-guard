@@ -12,7 +12,8 @@
     session-guard repos                    every git repo under this folder
     session-guard jev on                   turn the new-task check on; it asks for your TypeSafe key
     session-guard jev off                  turn it off
-    session-guard theme                    show the status line theme and a preview
+    session-guard theme                    pick the look with the arrow keys (needs a terminal)
+    session-guard theme show               print the theme and a preview
     session-guard theme list               every preset, previewed
     session-guard theme use <preset>       default | ocean | mono | high-contrast | colorblind
     session-guard theme set <key>=<value>  ok|warn|danger|dim=#rrggbb, bar, bar_width, emoji=on|off, mode,
@@ -36,7 +37,7 @@ sys.path.insert(0, str(HERE))  # cli.py is symlinked into ~/.local/bin
 
 import guard  # noqa: E402
 import install  # noqa: E402
-import statusline  # noqa: E402
+import themepicker  # noqa: E402
 import ui  # noqa: E402
 
 INSTALL_URL = "https://raw.githubusercontent.com/Swanand58/session-guard/main/install.sh"
@@ -77,18 +78,10 @@ def jev(args: list) -> None:
     else:
         sys.exit(__doc__)
 
-# Fake sessions on a 1M window, for previews: about 14%, 65% and 85% full.
-PREVIEWS = [
-    ({"context": ctx, "total": total, "last_msg": 0.14, "agents": agents, "prompts": ["x"], "peak": ctx,
-      "history": [ctx * k // 10 for k in range(3, 11)], "prompt_ctx": [ctx - 3 * step, ctx - 2 * step, ctx - step, ctx]},
-     {"window": 1_000_000, "jev": jev})
-    for ctx, step, total, agents, jev in ((140_000, 25_000, 2.61, 0.34, 0.1), (650_000, 30_000, 9.40, 0, 0.5), (850_000, 40_000, 17.20, 1.1, 0.93))
-]
-
 
 def preview(theme: dict, only: int | None = None) -> None:
-    for session, state in PREVIEWS if only is None else PREVIEWS[only:only + 1]:
-        print("  " + statusline.render(session, state, theme).replace("\n", "\n  "))
+    for line in themepicker.preview_lines(theme, only):
+        print("  " + line)
 
 
 def save_theme(raw: dict) -> None:
@@ -99,13 +92,31 @@ def save_theme(raw: dict) -> None:
     os.replace(tmp, path)  # atomic: the status line never reads half a file
 
 
-def change(raw: dict) -> None:
-    """Validate and save a theme, then show it. A bad theme exits with the reason and leaves the file alone."""
+def store(raw: dict) -> None:
+    """Validate and save a theme. A bad theme exits with the reason and leaves the file alone."""
     clean, error = ui.validate(raw)
     if error:
         sys.exit(f"Not saved. {error}")
     save_theme(clean)
+
+
+def change(raw: dict) -> None:
+    store(raw)
     show()
+
+
+def pick() -> None:
+    """The picker, if there is a terminal for it; otherwise the plain view."""
+    if not (themepicker.AVAILABLE and sys.stdin.isatty() and sys.stdout.isatty()):
+        show()
+        print("\nThe picker needs a terminal. Use: session-guard theme use <preset> / theme set key=value.")
+        return
+    new = themepicker.run(ui.load_raw())
+    if new is None:
+        print("Nothing changed.")
+    else:
+        store(new)
+        print("Saved. Your status line updates on the next message.")
 
 
 def show() -> None:
@@ -124,7 +135,9 @@ def show() -> None:
 
 
 def theme(args: list) -> None:
-    cmd, rest = (args[0], args[1:]) if args else ("show", [])
+    if not args:
+        return pick()
+    cmd, rest = args[0], args[1:]
     raw = ui.load_raw()
     if cmd == "show":
         show()

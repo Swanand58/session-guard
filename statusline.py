@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Claude Code status line: live session cost meter.
 
-    💸 172k ctx · ▰▰▰▰▰▰▰▰▱▱ 86% · ▃▄▅▆▇ · ~4 msgs to 180k · $4.61 (agents $0.67) · last msg $0.28 · 🧭 same task · /handover now
+    💸 172k ctx · ▰▰▰▰▰▰▰▰▱▱ 86% · ~4 msgs to 180k · $4.61 (agents $0.67) · last msg $0.28 · 🧭 same task · /handover now
 
 Colours and layout come from the theme: session-guard theme.
 
@@ -56,7 +56,6 @@ def render(session: dict, state: dict, theme: dict | None = None) -> str:
     seg = {
         "ctx": paint(f"{emoji('💸')}{ctx / 1000:.0f}k ctx", zone(ctx)),
         "bar": cells + paint(empty_char * (width - filled), "dim") + " " + paint(f"{ctx / window:.0%}", zone(ctx)),
-        "spark": ui.spark((session.get("history") or [])[-8:]),
         "eta": eta(session, ctx, lvls),
         "cost": f"${session['total']:.2f}" + (f" (agents ${session['agents']:.2f})" if session.get("agents", 0) >= 0.005 else ""),
         "last": f"last msg ${session['last_msg']:.2f}",

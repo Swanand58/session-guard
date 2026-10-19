@@ -1,4 +1,4 @@
-"""Look of the status line: colours, bars, sparkline and the user's theme file.
+"""Look of the status line: colours, bars and the user's theme file.
 
 The theme lives in guard.STATE_DIR / "theme.json". Every key is optional; anything
 missing or invalid falls back to the default, so a bad file never breaks the status line.
@@ -27,9 +27,8 @@ PRESETS = {  # name -> hex colour per role
 }
 BARS = {"blocks": "▰▱", "solid": "█░", "dots": "●○"}  # filled, empty
 MODES = ("auto", "truecolor", "256")
-SEGMENTS = ("ctx", "bar", "spark", "eta", "cost", "last", "jev", "hint")
+SEGMENTS = ("ctx", "bar", "eta", "cost", "last", "jev", "hint")
 DEFAULT_SEGMENTS = [list(SEGMENTS)]  # one line
-SPARK = "▁▂▃▄▅▆▇█"
 
 
 def to256(color: str) -> int:
@@ -59,16 +58,6 @@ def paint(text: str, role: str, theme: dict) -> str:
     else:
         code = f"38;5;{to256(color)}"
     return f"\033[{code}m{text}{RESET}"
-
-
-def spark(values: list) -> str:
-    """One block per value, scaled between the values' own min and max. "" for fewer than 2 values."""
-    if len(values) < 2:
-        return ""
-    lo, hi = min(values), max(values)
-    if hi == lo:
-        return SPARK[0] * len(values)
-    return "".join(SPARK[round((v - lo) / (hi - lo) * (len(SPARK) - 1))] for v in values)
 
 
 # Theme file ---------------------------------------------------------------------------------------
@@ -161,9 +150,16 @@ def theme_file():
 
 
 def load_raw() -> dict:
-    """What the user's theme file sets, with invalid or unreadable parts left out. Never raises."""
+    """What the user's theme file sets, with invalid or unreadable parts left out. Never raises.
+
+    Unknown segment names (say, one from an older version) are skipped; the rest of the layout is kept.
+    """
     try:
-        return _clean(json.loads(theme_file().read_text()), False)[0]
+        raw = json.loads(theme_file().read_text())
+        if isinstance(raw, dict) and isinstance(raw.get("segments"), list):
+            lines = [[n for n in line if n in SEGMENTS] for line in raw["segments"] if isinstance(line, list)]
+            raw["segments"] = [line for line in lines if line]
+        return _clean(raw, False)[0]
     except Exception:
         return {}
 

@@ -105,18 +105,39 @@ echo ".handover/" >> .git/info/exclude
 | `session-guard recall <id> "words"` | Search an earlier session (up to 5 short matches). |
 | `session-guard repos` | Every git repo under this folder, with branch and changes. |
 | `session-guard jev on` / `off` | Turn the new-task check on (it asks for your key) or off. |
-| `session-guard theme [list\|use\|set\|reset\|apply]` | Show or change the status line colours and layout. See [Customize the status line](#customize-the-status-line). |
+| `session-guard theme` | Open the picker: choose the status line colours and layout with the arrow keys. See [Customize the status line](#customize-the-status-line). |
+| `session-guard theme show\|list\|use\|set\|reset\|apply` | Print or change the theme with commands, for scripts. |
 | `session-guard test` | Run the self-checks. |
 
 Inside Claude Code: `/handover` saves a short note, `/continue` resumes from it.
 
 ## Customize the status line
 
-Show your current theme and a preview at three fill levels (14%, 65% and 85%
-of a 1M window):
+Run this in a terminal and pick the look with the arrow keys. The preview at
+the top (14%, 65% and 85% of a 1M window) changes as you move.
 
 ```bash
 session-guard theme
+```
+
+| Key | What it does |
+|---|---|
+| `↑` `↓` (or `k` `j`) | Move between rows |
+| `←` `→` (or `h` `l`) | Change a value: preset, bar style, bar width, emoji |
+| `Enter` or `Space` | On a colour: open the palette. On a segment: show or hide it. On Save or Cancel: do it. |
+| `s` | Save |
+| `q` or `Esc` | Cancel. Nothing is saved. |
+
+In the palette, move with the arrow keys and press `Enter` to pick. `Esc` goes
+back to the old colour. `#` lets you type your own hex colour. The last visible
+segment cannot be hidden. The picker keeps the order of the segments. To change
+the order, use `theme set segments=...` (below).
+
+Without a terminal (in a script, or piped), `session-guard theme` prints the
+current theme and a hint instead. To print it any time:
+
+```bash
+session-guard theme show
 session-guard theme list          # every preset, previewed
 ```
 
@@ -154,7 +175,6 @@ status line has no colours at all.
 |---|---|
 | `ctx` | context size, e.g. `💸 141k ctx` |
 | `bar` | how full the window is, e.g. `▰▰▱▱▱▱▱▱▱▱ 14%`. Each cell is coloured by the zone it sits in: before the first warning level, between level 1 and 2, beyond. |
-| `spark` | chart of the last 8 calls' context size |
 | `eta` | `~12 msgs to 160k`: tokens left to the next level, divided by how much context grew per message lately. Hidden until there are 2 messages, or if context is not growing. |
 | `cost` | cost so far, with the subagents' part if it is $0.005 or more |
 | `last` | cost of your last message |
@@ -165,10 +185,11 @@ A segment with nothing to show is skipped. To split the status line over two
 lines, put `|` between the lines:
 
 ```bash
-session-guard theme set 'segments=ctx,bar,spark,eta|cost,last,jev,hint'
+session-guard theme set 'segments=ctx,bar,eta|cost,last,jev,hint'
 ```
 
-The theme is saved in `~/.claude/session-guard/theme.json`. You can also set
+The theme is saved in `~/.claude/session-guard/theme.json`. The picker writes
+the preset and only what differs from it. You can also set
 all of it at once with JSON (this is the format any tool that builds a theme
 should use):
 
@@ -176,7 +197,7 @@ should use):
 session-guard theme apply '{"preset": "ocean", "bar": "dots", "segments": [["ctx", "bar"], ["cost", "last"]]}'
 ```
 
-Every key is optional. If the file is missing or broken, the defaults are used.
+Every key is optional. If the file is missing or broken, the defaults are used. Segment names it does not know (for example `spark`, which was removed) are skipped.
 
 ## Configure
 

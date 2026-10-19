@@ -198,17 +198,16 @@ subprocess.run([sys.executable, "guard.py"], capture_output=True, text=True, env
                input=json.dumps({"session_id": "s", "transcript_path": str(t2), "hook_event_name": "UserPromptSubmit", "prompt": "hi"}))
 assert json.loads((sl_home / ".claude" / "session-guard" / "s.json").read_text())["window"] == 1_000_000
 
-# read_session keeps its old keys and adds history (last 40 main-session calls) and prompt_ctx (last 6 prompt ends).
+# read_session keeps its old keys and adds prompt_ctx (last 6 prompt ends).
 t3 = transcript([prompt("a"), call("a", 100_000), call("b", 110_000), prompt("b"), call("c", 150_000),
                  {**call("side", 999_000), "isSidechain": True}, prompt("c"), call("d", 90_000)])
 s3 = guard.read_session(t3)
-assert s3["history"] == [100_000, 110_000, 150_000, 90_000], s3  # subagent call left out
-assert s3["prompt_ctx"] == [110_000, 150_000, 90_000], s3
+assert s3["prompt_ctx"] == [110_000, 150_000, 90_000], s3  # subagent call left out
 assert s3["context"] == 90_000 and s3["peak"] == 150_000 and len(s3["prompts"]) == 3
 many = guard.read_session(transcript([x for i in range(10) for x in (prompt(f"p{i}"), call(f"m{i}", 1000 * (i + 1)))]))
 assert many["prompt_ctx"] == [5000, 6000, 7000, 8000, 9000, 10000], many
 many = guard.read_session(transcript([prompt("p")] + [call(f"h{i}", 1000 * (i + 1)) for i in range(50)]))
-assert many["history"] == [1000 * (i + 1) for i in range(10, 50)] and many["prompt_ctx"] == [50_000], many
+assert many["prompt_ctx"] == [50_000] and "history" not in many, many
 assert guard.read_session(transcript([prompt("only")]))["prompt_ctx"] == []  # no reply yet
 
 # Colours: hex -> xterm-256, truecolor escape, NO_COLOR, mode detection.
@@ -242,23 +241,25 @@ try:
     assert th["preset"] == "ocean" and th["colors"]["ok"] == ui.PRESETS["ocean"]["ok"], th
     assert th["colors"]["warn"] == "#112233" and th["colors"]["danger"] == ui.PRESETS["ocean"]["danger"], th
     assert (th["bar"], th["bar_width"], th["emoji"], th["mode"]) == ("blocks", 10, True, "256"), th
-    assert th["segments"] == [list(ui.SEGMENTS)], th
+    assert th["segments"] == [["cost"]], th  # the unknown name is skipped, the rest kept
+    # The removed "spark" segment in an old theme file: skipped, the rest of the layout stays; validate still rejects it.
+    ui.theme_file().write_text(json.dumps({"segments": [["ctx", "spark", "cost"], ["spark"]]}))
+    assert ui.load()["segments"] == [["ctx", "cost"]] and "spark" not in ui.SEGMENTS
+    ui.theme_file().write_text(json.dumps({"segments": [["spark"]]}))
+    assert ui.load()["segments"] == ui.effective({})["segments"]
+    assert "ctx, bar, eta" in ui.validate({"segments": [["spark"]]})[1]
 finally:
     guard.STATE_DIR = real_dir
 assert all(ui.validate({"colors": c})[1] is None for c in ui.PRESETS.values()) and set(ui.PRESETS) >= {"colorblind", "high-contrast"}
 clean, err = ui.validate({"colors": {"ok": "AABBCC"}, "bar_width": 8, "emoji": False})
 assert err is None and clean == {"colors": {"ok": "#aabbcc"}, "bar_width": 8, "emoji": False}, (clean, err)
 for bad, words in (({"colors": {"ok": "red"}}, "#rrggbb"), ({"colors": {"bad": "#000000"}}, "ok, warn, danger, dim"),
-                   ({"segments": [["ctx", "nope"]]}, "ctx, bar, spark"), ({"bar": "wide"}, "blocks, solid, dots"),
+                   ({"segments": [["ctx", "nope"]]}, "ctx, bar, eta"), ({"bar": "wide"}, "blocks, solid, dots"),
                    ({"bar_width": 3}, "4 to 20"), ({"bar_width": True}, "4 to 20"), ({"emoji": "yes"}, "on or off"),
                    ({"mode": "8bit"}, "auto, truecolor, 256"), ({"preset": "x"}, "colorblind"), ({"segments": []}, "ctx"),
                    ({"nope": 1}, "valid keys"), ([], "JSON object")):
     out, err = ui.validate(bad)
     assert out == {} and err and words in err, (bad, err)
-
-# Sparkline.
-assert ui.spark([]) == ui.spark([5]) == "" and ui.spark([5, 5, 5]) == "▁▁▁"
-assert ui.spark(list(range(8))) == "▁▂▃▄▅▆▇█" and ui.spark([10, 0]) == "█▁"
 
 # Bar: filled cells take the colour of the zone they sit in; the percent takes the zone of the fill.
 paint = lambda text, role: ui.paint(text, role, T)
@@ -272,10 +273,7 @@ wide = ui.effective({"bar": "solid", "bar_width": 4, "segments": [["bar"]]})
 assert plain(rd(sess(100_000), {}, wide)) == "██░░ 50%", plain(rd(sess(100_000), {}, wide))  # 100k of 200k
 assert plain(rd(sess(100_000), {}, {**wide, "bar": "dots"})) == "●●○○ 50%"
 
-# Spark segment: the last 8 calls.
 only = lambda *names, **kw: ui.effective({"segments": [list(names)], **kw})
-assert plain(rd({**sess(150_000), "history": list(range(20))}, {}, only("spark"))) == "▁▂▃▄▅▆▇█"
-assert rd(sess(150_000), {}, only("spark")) == ""  # no history -> nothing
 
 # ETA: tokens to the next level / mean growth per prompt; /compact drops are ignored; hidden when unknown.
 eta = lambda ctx, prompt_ctx, **kw: plain(rd({**sess(ctx), "prompt_ctx": prompt_ctx}, kw.get("state", {}), only("eta")))
@@ -298,8 +296,8 @@ assert plain(rd(sess(150_000), {}, ui.effective({"segments": [["ctx", "bar"], ["
 assert plain(rd(sess(40_000), {}, only("eta", "cost", "hint"))) == "$1.00"  # hidden segments leave no " · "
 assert rd(sess(40_000), {}, only("eta", "hint")) == ""
 assert plain(rd(sess(40_000), {}, ui.effective({"segments": [["hint"], ["cost"]]}))) == "$1.00"  # empty line skipped
-full = plain(rd({**sess(150_000), "history": [1, 2, 3], "prompt_ctx": [100_000, 125_000, 150_000]}, {"jev": 0.1}))
-assert full == "💸 150k ctx · ▰▰▰▰▰▰▰▰▱▱ 75% · ▁▅█ · ~1 msg to 160k · $1.00 · last msg $0.10 · 🧭 same task · /handover soon", full
+full = plain(rd({**sess(150_000), "prompt_ctx": [100_000, 125_000, 150_000]}, {"jev": 0.1}))
+assert full == "💸 150k ctx · ▰▰▰▰▰▰▰▰▱▱ 75% · ~1 msg to 160k · $1.00 · last msg $0.10 · 🧭 same task · /handover soon", full
 
 # Prices: every model resolves to its own row (no shorter key shadows it), names are normalized,
 # long-context tiers apply above the threshold.
@@ -522,15 +520,15 @@ assert th_cli("use", "ocean").returncode == 0 and saved() == {"preset": "ocean"}
 r = th_cli("set", "ok=FF0000", "bar_width=6", "emoji=off", "dim=#123456")
 assert r.returncode == 0 and "#ff0000" in r.stdout, r.stdout
 assert saved() == {"preset": "ocean", "colors": {"ok": "#ff0000", "dim": "#123456"}, "bar_width": 6, "emoji": False}, saved()
-assert th_cli("set", "segments=ctx,bar,spark|cost,last").returncode == 0 and saved()["segments"] == [["ctx", "bar", "spark"], ["cost", "last"]]
+assert th_cli("set", "segments=ctx,bar,eta|cost,last").returncode == 0 and saved()["segments"] == [["ctx", "bar", "eta"], ["cost", "last"]]
 assert th_cli("set", "bar=dots", "mode=256").returncode == 0 and saved()["bar"] == "dots" and saved()["mode"] == "256"
 assert th_cli("use", "mono").returncode == 0 and "colors" not in saved() and saved()["preset"] == "mono"  # your colours would hide the preset
 before = th_file.read_text()
 for args, words in ((("set", "ok=red"), "#rrggbb"), (("set", "bar=wide"), "blocks, solid, dots"), (("set", "bar_width=30"), "4 to 20"),
-                    (("set", "bar_width=abc"), "4 to 20"), (("set", "emoji=maybe"), "on or off"), (("set", "segments=ctx,nope"), "ctx, bar, spark"),
+                    (("set", "bar_width=abc"), "4 to 20"), (("set", "emoji=maybe"), "on or off"), (("set", "segments=ctx,nope"), "ctx, bar, eta"),
                     (("set", "mode=8bit"), "auto, truecolor, 256"), (("set", "color=#000000"), "ok, warn, danger, dim"),
                     (("set", "ok"), "key=value"), (("use", "nope"), "colorblind"), (("apply", "{bad"), "valid JSON"),
-                    (("apply", '{"segments": [["x"]]}'), "ctx, bar, spark"), (("apply", '{"zzz": 1}'), "valid keys"), (("use",), "session-guard theme")):
+                    (("apply", '{"segments": [["x"]]}'), "ctx, bar, eta"), (("apply", '{"zzz": 1}'), "valid keys"), (("use",), "session-guard theme")):
     r = th_cli(*args)
     assert r.returncode != 0 and words in r.stderr and th_file.read_text() == before, (args, r.stderr)
 r = th_cli("apply", '{"preset": "colorblind", "bar": "solid", "colors": {"dim": "#abcdef"}, "segments": [["ctx"], ["cost"]]}')
@@ -546,5 +544,174 @@ assert "\033" not in sl_run(NO_COLOR="1") and "50k ctx" in sl_run(NO_COLOR="1")
 th_file.write_text("{{{")
 assert "50k ctx" in sl_run() and sl_run().count("\n") == 1
 assert th_cli("reset").returncode == 0 and not th_file.exists() and th_cli("reset").returncode == 0
+
+# Theme picker: keys, screens and the saved theme (no terminal needed).
+import themepicker as tp  # noqa: E402
+
+def press(st, *keys):
+    action = None
+    for k in keys:
+        st, action = tp.handle_key(st, k)
+    return st, action
+goto = lambda st, name: {**st, "row": tp.ROWS.index(name)}
+st = tp.initial_state({})
+assert st["row"] == 0 and st["palette"] is None and tp.to_theme(st) == {"preset": "default"}  # unchanged: a minimal file
+assert len(tp.SWATCHES) == 24 and all(c in tp.SWATCHES for p in ui.PRESETS.values() for c in p.values())
+# Moving: down/up and j/k, wrapping at both ends.
+assert press(st, "down", "j")[0]["row"] == 2 and press(st, "up")[0]["row"] == len(tp.ROWS) - 1
+assert press(goto(st, "cancel"), "down")[0]["row"] == 0 and press(st, "k", "k", "j")[0]["row"] == len(tp.ROWS) - 1
+# Preset: right/left cycle (wrapping) and reset the colours to the preset's.
+st2 = {**st, "colors": {**st["colors"], "ok": "#123456"}}
+st2, _ = press(st2, "right")
+assert st2["preset"] == "ocean" and st2["colors"] == ui.PRESETS["ocean"], st2
+assert press(st, "left")[0]["preset"] == "colorblind" and press(st, "enter")[0]["preset"] == "ocean" and press(st, "l", " ", "h")[0]["preset"] == "ocean"
+# Value rows: bar style cycles, width clamps at 4 and 20, emoji toggles.
+assert press(goto(st, "bar"), "right", "right")[0]["bar"] == "dots" and press(goto(st, "bar"), "left")[0]["bar"] == "dots"
+assert press(goto(st, "bar_width"), *["right"] * 30)[0]["bar_width"] == 20 and press(goto(st, "bar_width"), *["left"] * 30)[0]["bar_width"] == 4
+assert press(goto(st, "emoji"), " ")[0]["emoji"] is False and press(goto(st, "emoji"), "left", "right")[0]["emoji"] is True
+assert press(goto(st, "color:ok"), "right")[0] == goto(st, "color:ok")  # arrows do nothing on a colour row
+# Show: toggle off and back on (usual order); the last visible segment cannot be hidden.
+off, _ = press(goto(st, "seg:eta"), "enter")
+assert off["segments"] == [[n for n in ui.SEGMENTS if n != "eta"]]
+assert press(goto(off, "seg:eta"), " ")[0]["segments"] == [list(ui.SEGMENTS)]
+few = tp.initial_state({"segments": [["ctx", "cost"], ["hint"]]})
+assert press(goto(few, "seg:bar"), " ")[0]["segments"] == [["ctx", "bar", "cost"], ["hint"]]
+assert press(goto(few, "seg:ctx"), " ")[0]["segments"] == [["cost"], ["hint"]]
+one = tp.initial_state({"segments": [["cost"]]})
+assert press(goto(one, "seg:cost"), " ")[0]["segments"] == [["cost"]]  # refused
+assert press(goto(one, "seg:ctx"), " ")[0]["segments"] == [["ctx", "cost"]]
+# Palette: open, move (the colour follows), Esc puts the old colour back, Enter keeps the new one.
+p, _ = press(goto(st, "color:warn"), "enter")
+assert p["palette"]["role"] == "warn" and p["palette"]["grid"][p["palette"]["index"]] == ui.PRESETS["default"]["warn"]
+moved, _ = press(p, "right")
+assert moved["colors"]["warn"] == p["palette"]["grid"][p["palette"]["index"] + 1] != p["colors"]["warn"]
+back, _ = press(moved, "esc")
+assert back["palette"] is None and back["colors"] == st["colors"]
+kept, _ = press(moved, "enter")
+assert kept["palette"] is None and kept["colors"]["warn"] == moved["colors"]["warn"]
+far, _ = press(p, *["left"] * 40, "up")  # clamps at the first swatch
+assert far["palette"]["index"] == 0
+odd = tp.initial_state({"colors": {"ok": "#010203"}})
+assert press(goto(odd, "color:ok"), "enter")[0]["palette"]["grid"][0] == "#010203"  # a colour not in the list is kept as the first
+# Custom hex: valid (with or without #, upper case), invalid keeps the old colour and shows an error, Esc cancels.
+typed, _ = press(p, "#", "F", "f", "9", "9", "0", "0")
+assert typed["palette"]["typing"] == "#Ff9900"
+done, _ = press(typed, "enter")
+assert done["palette"] is None and done["colors"]["warn"] == "#ff9900"
+done, _ = press(p, "h", "a", "b", "c", "1", "2", "3", "enter")
+assert done["colors"]["warn"] == "#abc123"
+bad, _ = press(p, "#", "z", "g", "1", "2", "enter")  # z and g are not typed
+assert bad["palette"]["typing"] == "#12" and "6 hex digits" in bad["palette"]["error"] and bad["colors"] == p["colors"]
+bad, _ = press(p, "#", "backspace", "backspace", "enter")
+assert bad["palette"]["typing"] == "" and bad["palette"]["error"] and bad["colors"] == p["colors"]
+assert press(bad, "esc")[0]["palette"]["typing"] is None and press(typed, "backspace")[0]["palette"]["typing"] == "#Ff990"
+assert press(typed, "1")[0]["palette"]["typing"] == "#Ff9900"  # at most 6 digits
+assert press(p, "s")[1] is None and press(p, "q")[1] is None  # keys of the main screen do nothing in the palette
+# Save and cancel.
+assert press(st, "s")[1] == "save" and press(st, "q")[1] == "cancel" and press(st, "esc")[1] == "cancel" and press(p, "ctrl-c")[1] == "cancel"
+assert press(goto(st, "save"), "enter")[1] == "save" and press(goto(st, "cancel"), " ")[1] == "cancel" and press(goto(st, "save"), "right")[1] is None
+assert tp.parse_keys(b"\x1b[A\x1bOB\x1b[C\x1b[Dq \r\x7f\x03\x1b[3~x\x1b") == ["up", "down", "right", "left", "q", " ", "enter", "backspace", "ctrl-c", "x", "esc"]
+# Screens.
+screen = plain(tp.render(st, 100))
+assert screen.split("\n")[0] == "session-guard theme" and "› Preset      ‹ default ›" in screen and screen.count("› ") == 1, screen
+assert "██ #87af87" in screen and "██ #8a8a8a" in screen and "[x] spark" not in screen and "[x] hint" in screen and "[ Cancel ]" in screen
+assert screen.count("ctx") >= 3 and "14%" in screen and "85%" in screen and "q cancel" in screen
+assert "38;2;135;175;135m" in tp.render(st, 100) and "› Bar style" in plain(tp.render(goto(st, "bar"), 100))
+assert "[ ] eta" in plain(tp.render(off, 100)) and "› [ Save ]" in plain(tp.render(goto(st, "save"), 100))
+pscreen = plain(tp.render(p, 100))
+assert "warn colour" in pscreen and pscreen.count("██") >= 24 and "[██]" in pscreen and "(was #d7af5f)" in pscreen, pscreen
+assert "Type a hex colour: #Ff9900" in plain(tp.render(typed, 100)) and "6 hex digits" in plain(tp.render(bad, 100))
+for state_ in (st, p, typed, bad, goto(st, "save")):  # narrow terminal: the preview loses segments from the end, nothing is wider than 60
+    assert all(tp.width(line) <= 60 for line in plain(tp.render(state_, 60)).split("\n")), plain(tp.render(state_, 60))
+narrow = plain(tp.render(st, 60)).split("\n")
+assert "/handover" not in "\n".join(narrow[2:5]) and "ctx" in narrow[2] and st["segments"] == [list(ui.SEGMENTS)]
+assert tp.width("💸 1") == 4 and tp.width(ui.paint("██", "ok", T)) == 2
+# What gets saved: the preset plus only the colours that differ; the file passes validate and loads to the same look.
+st3, _ = press(st, "right")  # ocean
+st3, _ = press(goto(st3, "color:warn"), "enter", "right", "enter")
+st3, _ = press(goto(st3, "emoji"), "right")
+out = tp.to_theme(st3)
+assert out == {"preset": "ocean", "colors": {"warn": st3["colors"]["warn"]}, "emoji": False} and out["colors"]["warn"] != ui.PRESETS["ocean"]["warn"], out
+assert ui.validate(out) == (out, None)
+real_dir, guard.STATE_DIR = guard.STATE_DIR, Path(tempfile.mkdtemp())
+try:
+    cli.store(out)
+    loaded = ui.load()
+    assert loaded["preset"] == "ocean" and loaded["colors"] == st3["colors"] and loaded["emoji"] is False and loaded["bar"] == "blocks", loaded
+    assert json.loads(ui.theme_file().read_text()) == out and [f.name for f in ui.theme_file().parent.iterdir()] == ["theme.json"]
+    cli.store(tp.to_theme(tp.initial_state(ui.load_raw())))  # open and save without changes: same file
+    assert json.loads(ui.theme_file().read_text()) == out
+finally:
+    guard.STATE_DIR = real_dir
+
+# The picker in a real pseudo-terminal, with a temporary HOME (skipped where there is no pty).
+import subprocess  # noqa: E402,F811
+
+if os.name == "posix":
+    import fcntl
+    import pty
+    import select
+    import signal
+    import struct
+    import termios
+    import time
+
+    def drive(keys, home, rows=40, cols=100):
+        """Run `cli.py theme` in a pty, send keys one by one. (output, exit code). Fails, not hangs, after 30 seconds."""
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execve(sys.executable, [sys.executable, "cli.py", "theme"], {**th_env, "HOME": str(home), "COLORTERM": "truecolor", "TERM": "xterm-256color"})
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        out, end, closed = b"", time.time() + 30, False
+
+        def pump(seconds, until=None):
+            nonlocal out, closed
+            stop = min(end, time.time() + seconds)
+            while time.time() < stop and not closed and not (until and until in out):
+                if select.select([fd], [], [], 0.05)[0]:
+                    try:
+                        chunk = os.read(fd, 65536)
+                    except OSError:
+                        chunk = b""
+                    out, closed = out + chunk, not chunk
+        pump(20, until=b"Show")  # first screen is up
+        for key in keys:
+            os.write(fd, key)
+            pump(0.2)
+        pump(20)  # until the picker exits and the terminal closes
+        for _ in range(100):
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done:
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            raise AssertionError(f"the picker did not exit: {out[-300:]!r}")
+        os.close(fd)
+        return out.decode("utf-8", "replace"), os.waitstatus_to_exitcode(status)
+
+    pk_home = Path(tempfile.mkdtemp())
+    pk_file = pk_home / ".claude" / "session-guard" / "theme.json"
+    out, code = drive([b"\x1b[C", b"s"], pk_home)  # right arrow (preset: ocean), then save
+    assert code == 0 and json.loads(pk_file.read_text()) == {"preset": "ocean"}, (code, out[-300:])
+    assert out.index("\x1b[?1049h") < out.index("\x1b[?1049l") < out.index("Saved. Your status line updates on the next message.")
+    assert "\x1b[?25l" in out and out.rindex("\x1b[?25h") > out.index("\x1b[?25l") and "38;2;" in out and "› Preset" in plain(out), out[-300:]
+    assert [f.name for f in pk_file.parent.iterdir()] == ["theme.json"]
+    # Second visit starts from the saved theme. Eight downs in one write reach "ctx"; Enter hides it; seven more reach [ Save ].
+    out, code = drive([b"\x1b[B" * 8, b"\r", b"\x1b[B" * 7, b"\r"], pk_home)
+    assert code == 0 and json.loads(pk_file.read_text()) == {"preset": "ocean", "segments": [list(ui.SEGMENTS[1:])]}, (code, out[-300:])
+    # q, a lone Esc and Ctrl-C cancel without writing anything.
+    for key in (b"q", b"\x1b", b"\x03"):
+        cancel_home = Path(tempfile.mkdtemp())
+        out, code = drive([b"\x1b[C", key], cancel_home)
+        assert code == 0 and not (cancel_home / ".claude" / "session-guard" / "theme.json").exists(), (key, code, out[-300:])
+        assert out.rindex("\x1b[?25h") > out.rindex("\x1b[?25l") and out.rindex("\x1b[?1049l") > out.rindex("\x1b[?1049h") and "Nothing changed." in out, (key, out[-300:])
+# Not a terminal (a pipe, a script): no picker, the plain view and the hint, and it does not wait for input.
+r = subprocess.run([sys.executable, "cli.py", "theme"], input="", capture_output=True, text=True, timeout=30,
+                   env={**th_env, "HOME": str(Path(tempfile.mkdtemp()))})
+assert r.returncode == 0 and "Preset" not in r.stdout and "preset    default" in r.stdout, r
+assert "The picker needs a terminal. Use: session-guard theme use <preset> / theme set key=value." in r.stdout
+assert th_cli("show").returncode == 0 and "preset    default" in th_cli("show").stdout
 
 print("all good")
