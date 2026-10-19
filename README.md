@@ -212,7 +212,11 @@ session-guard view --session ID    # another session (`session-guard recall id` 
 session-guard view --no-open       # only write the file and print its path
 ```
 
-It is one HTML file, `~/.claude/session-guard/view/<session id>.html`. It shows:
+It is one HTML file, `~/.claude/session-guard/view/<session id>.html`. The
+design is minimal: one column, flat, no cards, mono type, heavy enough to read
+at a glance. It opens **dark**. A small `dark · light · auto` switch at the top
+right changes that, and the page remembers your choice (`auto` follows your
+system). All text meets WCAG AAA contrast (7:1 or better). It shows:
 
 - **Context now**, how full the window is, the warning levels (60%, 80%, 90%
   by default) and the cost: so far, subagents, last message.
@@ -221,10 +225,11 @@ It is one HTML file, `~/.claude/session-guard/view/<session id>.html`. It shows:
   Hover, touch or use the arrow keys to see what grew it at that call.
   The same numbers are in a table below the chart.
 - **Biggest grabs:** the things that grew the context, biggest first, and the
-  baseline (system prompt, tools, memory) shown apart. A tick box adds the
-  conversation itself (replies and your messages). Sizes are estimates; the
-  total is exact.
-- **Theme studio:** colour pickers, presets, bar style and width, emoji, the
+  baseline (system prompt, tools, memory) shown apart. Rows under 1% of the
+  context are hidden behind "show all". A tick box adds the conversation
+  itself (replies and your messages). Sizes are estimates; the total is exact.
+- **Theme studio**, folded away until you open "Theme" (or add `#theme` to the
+  address): colour pickers, presets, bar style and width, emoji, the
   clickable `ctx`, and which segments to show, in which order, on how many
   lines. A live preview of the status line uses your real numbers at the
   current fill and at 65% and 85%. **Copy command** gives you a
@@ -245,6 +250,8 @@ internet and sends nothing. It holds numbers, tool names and file base names
 contents or URLs. The file is readable only by you, and `session-guard
 uninstall --purge` deletes it with the rest of the session-guard folder. The page
 is a snapshot: reload the tab after your next message, or run the command again.
+The page is rebuilt when the session, your theme or the page design is newer than
+the file, so an update brings the new design on its next status line refresh.
 
 ## What grew the context
 

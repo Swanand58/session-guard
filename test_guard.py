@@ -963,7 +963,7 @@ try:
     # render_html: the data goes in a JSON block that cannot be closed early.
     html = view.render_html(d)
     m = _re.search(r'<script type="application/json" id="session-data">(.*?)</script>', html, _re.S)
-    assert m and "{{SESSION_DATA}}" not in html and html.count("</script>") == 2  # the data block and the page's code
+    assert m and "{{SESSION_DATA}}" not in html and html.count("</script>") == 3  # the head script, the data block and the page's code
     assert not any(ch in m.group(1) for ch in "<>&  ") and json.loads(m.group(1)) == json.loads(json.dumps(d))
     assert any(i["label"].startswith("</script>") for i in json.loads(m.group(1))["items"]) and MARK not in html
     assert "<img" not in html and view.render_html({**d, "calls": [{"context": 1, "delta": 0, "label": "a b"}]}).count(" ") == 0
@@ -972,7 +972,9 @@ try:
     assert not _re.search(r"(?:src|href|action)\s*=\s*[\"']?\s*(?:https?:)?//", tpl, _re.I) and "@import" not in tpl and "<link" not in tpl.lower()
     assert not _re.search(r"url\(\s*[\"']?\s*(?:https?:)?//", tpl, _re.I) and not _re.search(r"\b(fetch|XMLHttpRequest|sendBeacon|WebSocket|EventSource|importScripts)\b|\bimport\s*\(", tpl)
     assert set(_re.findall(r"https?://[^\s\"')<]+", tpl)) <= {"http://www.w3.org/2000/svg"}  # an XML namespace name, never requested
-    assert 'name="color-scheme"' in tpl and "prefers-color-scheme: dark" in tpl and 'name="viewport"' in tpl
+    assert 'name="color-scheme"' in tpl and "prefers-color-scheme: light" in tpl and 'name="viewport"' in tpl
+    # Appearance: dark by default whatever the system says; light and dark are driven by data-theme, with auto (no attribute) following the system.
+    assert ':root[data-theme="light"]' in tpl and ":root:not([data-theme])" in tpl and tpl.index("localStorage.getItem") < tpl.index("<style>")
     # write(): the right place, owner-only, atomic, nothing left behind; link() is a file:// URL of it.
     path = view.write(pv_t)
     assert path == pv_dir / "view" / f"{pv_t.stem}.html" and path.exists() and "session-data" in path.read_text(encoding="utf-8")
@@ -1021,6 +1023,23 @@ sv_dir.mkdir(parents=True, exist_ok=True); (sv_dir / "theme.json").write_text('{
 os.utime(sv_dir / "theme.json", (future + 300, future + 300))
 sv_run()
 assert sv_page.stat().st_mtime_ns != fresh
+# A newer page template or view.py (an update of session-guard) also refreshes an existing page.
+real_dir, guard.STATE_DIR = guard.STATE_DIR, sv_dir
+real_tpl, real_file = view.TEMPLATE, view.__file__
+try:
+    tpl_copy = Path(tempfile.mkdtemp()) / "view.html"; shutil.copy(real_tpl, tpl_copy)
+    code_copy = tpl_copy.with_name("view.py"); shutil.copy(real_file, code_copy)
+    view.TEMPLATE, view.__file__ = tpl_copy, str(code_copy)
+    far = os.stat(sv_page).st_mtime + 1000
+    for name, touched in (("template", tpl_copy), ("code", code_copy)):
+        os.utime(sv_page, (far, far)); os.utime(tpl_copy, (far - 500, far - 500)); os.utime(code_copy, (far - 500, far - 500)); os.utime(pv_t, (far - 500, far - 500))
+        before_page = sv_page.stat().st_mtime_ns
+        assert statusline.page_link(pv_t, {}) == sv_page.as_uri() and sv_page.stat().st_mtime_ns == before_page, name  # both older: untouched
+        os.utime(touched, (far + 500, far + 500))
+        assert statusline.page_link(pv_t, guard.read_session(pv_t)) == sv_page.as_uri() and sv_page.stat().st_mtime_ns != before_page, name  # newer: rewritten
+finally:
+    view.TEMPLATE, view.__file__ = real_tpl, real_file
+    guard.STATE_DIR = real_dir
 # Same text with the link on, off, and with NO_COLOR (which keeps the link).
 (sv_dir / "theme.json").write_text("{}")
 on, nc = sv_run(COLORTERM="truecolor"), sv_run(NO_COLOR="1")
@@ -1093,8 +1112,25 @@ assert r.returncode == 0 and seen_url.exists() and seen_url.read_text().strip() 
 
 # The page's own JavaScript (needs node; skipped without it): the same text and colours as statusline.py, and a theme command ui.validate accepts.
 if shutil.which("node"):
-    scripts = _re.findall(r"<script>(.*?)</script>", tpl, _re.S)
-    assert len(scripts) == 1
+    bare = _re.findall(r"<script>(.*?)</script>", tpl, _re.S)  # the head script (appearance) and the page's code
+    scripts = [x for x in bare if "var Core" in x]
+    assert len(bare) == 2 and len(scripts) == 1
+    # The head script: dark by default; your saved choice; no throw when storage is missing or blocked.
+    head_js = [x for x in bare if "localStorage" in x and "var Core" not in x][0]
+    head_runner = ("const vm=require('vm');const src=require('fs').readFileSync(process.argv[1],'utf8');const out=[];"
+                   "for(const mode of ['none','throws','dark','light','auto','junk','blocked-getitem']){"
+                   "const attrs={};const meta={c:'dark',setAttribute(k,v){this.c=v}};"
+                   "const doc={documentElement:{setAttribute(k,v){attrs[k]=v},removeAttribute(k){delete attrs[k]}},querySelector:()=>meta};"
+                   "const ctx={document:doc};"
+                   "if(mode==='throws')Object.defineProperty(ctx,'localStorage',{get(){throw new Error('SecurityError')}});"
+                   "else if(mode==='blocked-getitem')ctx.localStorage={getItem(){throw new Error('denied')}};"
+                   "else if(mode!=='none')ctx.localStorage={getItem:()=>mode};"
+                   "vm.runInNewContext(src,ctx);out.push([mode,attrs['data-theme']||null,meta.c]);}console.log(JSON.stringify(out))")
+    js_dir0 = Path(tempfile.mkdtemp())
+    (js_dir0 / "head.js").write_text(head_js, encoding="utf-8")
+    assert json.loads(subprocess.run(["node", "-e", head_runner, str(js_dir0 / "head.js")], capture_output=True, text=True, check=True).stdout) == [
+        ["none", "dark", "dark"], ["throws", "dark", "dark"], ["dark", "dark", "dark"], ["light", "light", "light"], ["auto", None, "light dark"],
+        ["junk", "dark", "dark"], ["blocked-getitem", "dark", "dark"]]
     js_dir = Path(tempfile.mkdtemp())
     (js_dir / "core.js").write_text(scripts[0], encoding="utf-8")
     runner = ("const C=require(process.argv[1]);const cs=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log(JSON.stringify(cs.map(c=>"

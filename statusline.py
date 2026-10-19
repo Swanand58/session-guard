@@ -50,11 +50,13 @@ def top_grab(session: dict) -> str:
 
 
 def page_link(transcript: Path, session: dict) -> str | None:
-    """URL of the session page (view.py), rewritten first if the transcript or the theme is newer. None on any failure."""
+    """URL of the session page (view.py), rewritten first if the transcript, the theme or the page code is newer. None on any failure."""
     try:
         import view  # here, so a missing file only drops the link
         page = view.page_path(transcript)
-        newest = max(transcript.stat().st_mtime, ui.theme_file().stat().st_mtime if ui.theme_file().exists() else 0)
+        # Newer than the page: the session, your theme, or the page's own code (so an update shows up in existing pages).
+        newest = max(transcript.stat().st_mtime, Path(view.TEMPLATE).stat().st_mtime, Path(view.__file__).stat().st_mtime,
+                     ui.theme_file().stat().st_mtime if ui.theme_file().exists() else 0)
         if not page.exists() or page.stat().st_mtime < newest:
             view.write(transcript, session=session)
         return view.link(transcript)
