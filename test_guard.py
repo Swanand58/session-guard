@@ -68,13 +68,15 @@ assert abs(s["last_msg"] - (0.024 + 0.01 + 0.06)) < 1e-9, s  # agent-old ran bef
 a = guard.read_agent(agents_dir / "agent-new.jsonl")
 assert a["context"] == 200_000 and abs(a["total"] - 0.06) < 1e-9, a
 
-# Subagent guard: tell it to wrap up once per level.
+# Subagent guard: tell the user (not the subagent) once per level.
 state, events = {}, []
 assert guard.decide_agent({"context": 100_000, "total": 0.1}, state, events) is None and state == {}
 out = guard.decide_agent({"context": 160_000, "total": 0.5}, state, events)
-assert "160k" in out["hookSpecificOutput"]["additionalContext"], out
+assert "160k" in out["systemMessage"], out
 assert guard.decide_agent({"context": 170_000, "total": 0.6}, state, events) is None  # same level: quiet
-assert events == [{"event": "agent_warn", "level": 150_000, "ctx": 160_000}], events
+assert events == [{"event": "agent_warn", "level": 160_000, "ctx": 160_000}], events  # 80% of a 200k window
+assert "80% of 200k" in out["systemMessage"], out
+assert "hookSpecificOutput" not in out, out  # nothing is sent to the subagent
 
 # The hook itself, with a temporary HOME: quiet for the main session's tool calls, speaks inside a big subagent.
 import subprocess  # noqa: E402
@@ -96,11 +98,52 @@ assert guard.price_for("some-new-model") == guard.DEFAULT_PRICE
 state = {}
 sess = lambda ctx: {"context": ctx, "total": 1.0, "last_msg": 0.1, "prompts": ["x"]}
 assert guard.decide({}, sess(100_000), state) is None
-assert "systemMessage" in guard.decide({}, sess(160_000), state)
-assert guard.decide({}, sess(170_000), state) is None  # same level: quiet
-assert "systemMessage" in guard.decide({}, sess(310_000), state)
+assert "systemMessage" in guard.decide({}, sess(130_000), state)  # 60% of 200k
+assert guard.decide({}, sess(140_000), state) is None  # same level: quiet
+assert "systemMessage" in guard.decide({}, sess(170_000), state)  # 80%
 assert guard.decide({}, sess(40_000), state) is None  # after /compact
-assert "systemMessage" in guard.decide({}, sess(160_000), state)  # warns again
+assert "systemMessage" in guard.decide({}, sess(130_000), state)  # warns again
+
+# Levels are shares of the window: 200k, 1M, SESSION_GUARD_LEVELS and SESSION_GUARD_WINDOW overrides, bad values.
+for var in ("SESSION_GUARD_LEVELS", "SESSION_GUARD_WINDOW"):
+    os.environ.pop(var, None)
+assert guard.levels(200_000) == [120_000, 160_000, 180_000]
+assert guard.levels(1_000_000) == [600_000, 800_000, 900_000]
+os.environ["SESSION_GUARD_LEVELS"] = "0.9, 0.8,0.95"
+assert guard.levels(200_000) == [160_000, 180_000, 190_000]
+for bad in ("", "abc", "0.5,x", "0,0.5", "1.5", "-0.2,0.5", "nan", "0.5,,0.9"):
+    os.environ["SESSION_GUARD_LEVELS"] = bad
+    assert guard.levels(200_000) == [120_000, 160_000, 180_000], bad
+del os.environ["SESSION_GUARD_LEVELS"]
+# The window: env, then the size the status line saved, then proof from a call over 200k, then 200k.
+assert guard.window_for({"context": 150_000}) == 200_000
+assert guard.window_for({"context": 150_000, "peak": 150_000}) == 200_000
+assert guard.window_for({"context": 150_000, "peak": 310_000}) == 1_000_000  # shrank after /compact
+assert guard.window_for({"context": 150_000}, {"window": 1_000_000}) == 1_000_000
+assert guard.window_for({"context": 350_000}, {"window": "junk"}) == 1_000_000
+os.environ["SESSION_GUARD_WINDOW"] = "500000"
+assert guard.window_for({"context": 150_000}, {"window": 1_000_000}) == 500_000
+os.environ["SESSION_GUARD_WINDOW"] = "junk"
+assert guard.window_for({"context": 150_000}, {"window": 1_000_000}) == 1_000_000
+del os.environ["SESSION_GUARD_WINDOW"]
+# On a 1M window 310k is quiet and the message says how full it is; 600k warns.
+state = {}
+assert guard.decide({}, sess(310_000), state) is None
+out = guard.decide({}, sess(610_000), state)
+assert "610k tokens (61% of 1000k" in out["systemMessage"], out
+# A call over 200k flips the default window from 200k to 1M: 130k warned (65% of 200k), 250k does not.
+state = {}
+assert "systemMessage" in guard.decide({}, sess(130_000), state)
+assert guard.decide({}, sess(250_000), state) is None
+# A window saved by the status line wins over the default; compact reset works on the 1M levels.
+state = {"window": 1_000_000}
+assert guard.decide({}, sess(130_000), state) is None
+assert "systemMessage" in guard.decide({}, sess(650_000), state) and state["warned"] == 600_000
+assert guard.decide({}, {**sess(100_000), "peak": 650_000}, state) is None and state["warned"] == 0
+assert "systemMessage" in guard.decide({}, sess(650_000), state)
+# read_session reports the biggest main-session call.
+t2 = transcript([prompt("x"), call("a", 310_000), call("b", 50_000)])
+assert guard.read_session(t2)["peak"] == 310_000 and guard.read_session(t2)["context"] == 50_000
 
 # Jev: block a new task once, let the same prompt through the second time.
 os.environ["TYPESAFE_API_KEY"], os.environ["SESSION_GUARD_JEV"] = "k", "1"
@@ -126,12 +169,25 @@ assert state["jev"] == 0.1
 import statusline  # noqa: E402
 
 assert statusline.render(sess(0), {}) == ""  # nothing before the first reply
-line = statusline.render(sess(172_000), {"jev": 0.1})
-assert "172k ctx" in line and "same task" in line and "/handover soon" in line, line
-line = statusline.render(sess(320_000), {"jev": 0.93})
+line = statusline.render(sess(150_000), {"jev": 0.1})
+assert "150k ctx" in line and "same task" in line and "/handover soon" in line, line
+line = statusline.render(sess(190_000), {"jev": 0.93})
 assert "new task? 93%" in line and "/handover now" in line, line
 assert "/handover" not in statusline.render(sess(40_000), {})
-assert "agents" not in line and "$1.00 (agents $0.25)" in statusline.render({**sess(172_000), "agents": 0.25}, {})
+assert "agents" not in line and "$1.00 (agents $0.25)" in statusline.render({**sess(150_000), "agents": 0.25}, {})
+assert "/handover" not in statusline.render(sess(310_000), {"window": 1_000_000})  # 31% of a 1M window: quiet
+# Status line saves the window to the session's state file without dropping other keys.
+sl_home = Path(tempfile.mkdtemp())
+(sl_home / ".claude" / "session-guard").mkdir(parents=True)
+(sl_home / ".claude" / "session-guard" / "s.json").write_text(json.dumps({"warned": 120_000, "jev": 0.3}))
+subprocess.run([sys.executable, "statusline.py"], capture_output=True, text=True, env={**os.environ, "HOME": str(sl_home)},
+               input=json.dumps({"session_id": "s", "transcript_path": str(t2), "context_window": {"context_window_size": 1_000_000}}))
+saved = json.loads((sl_home / ".claude" / "session-guard" / "s.json").read_text())
+assert saved == {"warned": 120_000, "jev": 0.3, "window": 1_000_000}, saved
+# ...and guard.py keeps it when it rewrites the file.
+subprocess.run([sys.executable, "guard.py"], capture_output=True, text=True, env={**os.environ, "HOME": str(sl_home)},
+               input=json.dumps({"session_id": "s", "transcript_path": str(t2), "hook_event_name": "UserPromptSubmit", "prompt": "hi"}))
+assert json.loads((sl_home / ".claude" / "session-guard" / "s.json").read_text())["window"] == 1_000_000
 
 # Prices: every model resolves to its own row (no shorter key shadows it), names are normalized,
 # long-context tiers apply above the threshold.
@@ -154,7 +210,7 @@ guard.decide({"prompt": "dup"}, sess(90_000), st, jev=new_task, events=events)
 assert [e["event"] for e in events] == ["override"], events
 events = []
 guard.decide({}, sess(160_000), {}, events=events)
-assert events == [{"event": "warn", "level": 150_000, "ctx": 160_000}], events
+assert events == [{"event": "warn", "level": 160_000, "ctx": 160_000}], events
 assert all("prompt" not in e for e in events)
 
 # Report: per-session stats inside the period only; subagent files count toward their parent session.
