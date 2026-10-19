@@ -24,18 +24,37 @@ curl -fsSL https://raw.githubusercontent.com/Swanand58/session-guard/main/instal
 
 That downloads session-guard to `~/.session-guard` and adds it to
 `~/.claude/settings.json` (a backup is saved next to it first). It adds the
-warning hook, a live cost meter in the status line, and the `/handover` and
-`/continue` commands. Restart Claude Code afterwards.
+warning hook, a live cost meter in the status line, the `/handover` and
+`/continue` commands, and the `session-guard` command (a link in
+`~/.local/bin`). It also saves your last 30 days of costs as the "before"
+numbers for the [benchmark](#benchmark-before-vs-after). Restart Claude Code
+afterwards. Check it worked with `session-guard status`.
+
+If your shell says `session-guard: command not found`, add `~/.local/bin` to
+your PATH (the installer prints the line to add).
 
 ```
 💸 150k ctx ▰▱▱ · $5.39 · last msg $0.44 · 🧭 same task · /handover soon
 ```
 
 - Already have a status line? It keeps showing, above ours.
-- Run the same command again to update. It never adds anything twice.
+- Run the same command again, or `session-guard update`, to update. It never
+  adds anything twice.
 - From a clone instead: `python3 install.py`.
-- Uninstall: `python3 ~/.session-guard/install.py uninstall`. This puts your
-  old status line back.
+
+### Uninstall
+
+```bash
+session-guard uninstall            # undo everything it added; keeps your reports and logs
+session-guard uninstall --purge    # also delete its files, reports and logs
+```
+
+Your old status line comes back. A settings backup is saved first. Lost the
+command? This does the same from scratch:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Swanand58/session-guard/main/install.sh | bash -s -- uninstall --purge
+```
 
 Keep handover notes out of commits, per repo, without touching `.gitignore`:
 
@@ -66,6 +85,23 @@ echo ".handover/" >> .git/info/exclude
    `python3 .../statusline.py bash /path/to/yours.sh`
 
 </details>
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `session-guard install` | Set up the hooks, status line, `/handover`, `/continue` and the command. Safe to run twice. |
+| `session-guard uninstall [--purge]` | Remove them. `--purge` also deletes its files, reports and logs. |
+| `session-guard update` | Get the latest version. |
+| `session-guard status` | What is installed, when it warns, and whether Jev is on. |
+| `session-guard report before\|after\|compare [--days N]` | Your costs before vs after. See [Benchmark](#benchmark-before-vs-after). |
+| `session-guard recall id` | The id of the current session. |
+| `session-guard recall <id> "words"` | Search an earlier session (up to 5 short matches). |
+| `session-guard repos` | Every git repo under this folder, with branch and changes. |
+| `session-guard jev on` / `off` | Turn the new-task check on (it asks for your key) or off. |
+| `session-guard test` | Run the self-checks. |
+
+Inside Claude Code: `/handover` saves a short note, `/continue` resumes from it.
 
 ## Configure
 
@@ -99,15 +135,14 @@ and the defaults are used.
 
 ## Jev new-task check (optional, off by default)
 
-Add these two lines to `~/.session-guard/.env` (in a clone: `.env` next to
-`guard.py`, which is git-ignored):
-
-```
-TYPESAFE_API_KEY=your-key
-SESSION_GUARD_JEV=1
+```bash
+session-guard jev on     # asks for your TypeSafe API key (typing is hidden), then turns it on
+session-guard jev off    # turns it off; keeps the key
 ```
 
-Or set them as environment variables (`export TYPESAFE_API_KEY=...`) instead.
+The key is saved in `~/.session-guard/.env` (in a clone: `.env` next to
+`guard.py`, which is git-ignored), readable only by you. You can also set
+`TYPESAFE_API_KEY` and `SESSION_GUARD_JEV=1` as environment variables instead.
 
 On macOS with Python from python.org, HTTPS calls fail with
 `CERTIFICATE_VERIFY_FAILED` until you run
@@ -126,7 +161,7 @@ down, the prompt goes through normally.
 2. At a good stopping point: `/handover`, then `/clear`, then `/continue`.
 3. The note records the old session's id. If the new session needs a detail the
    note left out, it searches the old transcript (up to 5 short matches):
-   `python3 ~/.claude/session-guard/recall.py <session-id> "a few words"`
+   `session-guard recall <session-id> "a few words"`
 
 ### Folders with several repos
 
@@ -149,14 +184,14 @@ A subagent starts with a fresh context and has its own transcript, so:
   cost. The subagent is not told to stop; it carries on. This uses a
   `PostToolUse` hook, which also runs (and exits straight away) on the main
   session's tool calls.
-- **Report:** `report.py` shows subagent runs and their share of the cost.
+- **Report:** `session-guard report` shows subagent runs and their share of the cost.
 
 Already installed? Run the install command again to add the subagent hook.
 
 ## Test
 
 ```bash
-python3 test_guard.py
+session-guard test
 ```
 
 ## Benchmark: before vs after
@@ -166,18 +201,15 @@ It reads both **Claude Code** (`~/.claude/projects`) and **GitHub Copilot CLI**
 GitHub actually billed, when the session log has them. Copilot CLI only logs
 totals per session, so the context-size rows (marked `*`) cover Claude Code only.
 
-**1. Before installing session-guard**, save stats for your last 30 days:
+**1. Install session-guard.** It saves your last 30 days as the "before"
+numbers for you. (Redo it any time with `session-guard report before`.)
 
-```bash
-python3 report.py before
-```
-
-**2. Install session-guard and work normally for ~30 days.**
+**2. Work normally for ~30 days.**
 
 **3. Then:**
 
 ```bash
-python3 report.py after
+session-guard report after
 ```
 
 It covers every day since step 1, so the two periods never overlap, and
@@ -191,8 +223,8 @@ Cost per message ($)                        0.857        0.410     -52% ✓
 ...
 ```
 
-(Example numbers.) `python3 report.py compare` shows it again later. Results
-are saved in `before.json` / `after.json` (git-ignored).
+(Example numbers.) `session-guard report compare` shows it again later. Results
+are saved in `~/.claude/session-guard/before.json` and `after.json`.
 
 Compare the **per-session and per-message** numbers: totals depend on how
 much work you did. For tokens per session, look at the **median**: one huge
@@ -207,7 +239,9 @@ roughly a time Jev was wrong.
 
 - **Python 3.9 or newer.** No packages to install.
 - **Windows:** use `python` (or `py`) instead of `python3` in the settings,
-  with a full `C:\...` path. Use Windows Terminal for colours and emoji.
+  with a full `C:\...` path. Use Windows Terminal for colours and emoji. The
+  one-line installer needs bash (use WSL), or install by hand as above and run
+  commands as `python cli.py status`, `python cli.py report after`, and so on.
 - **Nothing shows at all?** Run `/hooks` in Claude Code. If your company
   manages Claude Code settings, it may block personal hooks or status lines.
 - **Status line is empty?** Your Claude Code setup may not record token
@@ -216,7 +250,7 @@ roughly a time Jev was wrong.
 - **Jev never shows (🧭)?** A company firewall may block `api.typesafe.ai`.
   session-guard then carries on without it.
 - Only Claude Code shows warnings and the status line. For Copilot CLI,
-  `report.py` reads its sessions, but it has no live warnings.
+  `session-guard report` reads its sessions, but it has no live warnings.
 
 ## License
 
