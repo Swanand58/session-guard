@@ -292,6 +292,21 @@ for name, mtime in (("old", 1), ("new", 2)):
 assert recall.current_id("/tmp/my.app") == "new"
 assert recall.current_id("/tmp/other") is None
 
+# Repo discovery: a plain folder holding repos at any depth (skips dependency folders, hidden folders and repos inside repos).
+import subprocess  # noqa: E402
+work = Path(tempfile.mkdtemp())
+for sub in ("api", "web/deep/er/app", "node_modules/pkg", ".cache/x", "api/vendored"):
+    (work / sub).mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(work / sub)], check=True)
+(work / "docs").mkdir()
+(work / "api" / "new.txt").write_text("x")
+assert [r.relative_to(work).as_posix() for r in recall.find_repos(work)] == ["api", "web/deep/er/app"], recall.find_repos(work)
+rep = recall.repo_report(work)
+assert "## api  (branch: main)" in rep and "## web/deep/er/app  (branch: main)" in rep and "new.txt" in rep, rep
+assert rep.count("\n## ") == 2, rep  # node_modules, .cache and api/vendored got no block
+assert recall.find_repos(work / "api") == [work / "api"]  # started inside one repo: just that repo
+assert "No git repos found" in recall.repo_report(work / "docs")
+
 # Installer, against a temporary HOME: merges, keeps the old status line, safe twice, uninstall restores.
 home = Path(tempfile.mkdtemp())
 (home / ".claude").mkdir()
