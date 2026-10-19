@@ -255,6 +255,15 @@ def ask_jev(prompts: list[str], new_prompt: str, api_key: str) -> float | None:
         return None
 
 
+def grab_note(source: dict, sidechain: bool = False, n: int = 3) -> str:
+    """The biggest contributors to the context (see grabs.py), or "" if unknown. Never raises: the warning must still show."""
+    try:
+        import grabs
+        return grabs.describe(grabs.grabs(source["transcript"], sidechain), n)
+    except Exception:
+        return ""
+
+
 def decide(hook: dict, session: dict, state: dict, jev=ask_jev, events: list | None = None) -> dict | None:
     """Return the hook's JSON output, or None to stay quiet. Mutates state; appends to events."""
     events = [] if events is None else events
@@ -291,9 +300,11 @@ def decide(hook: dict, session: dict, state: dict, jev=ask_jev, events: list | N
     if crossed:
         state["warned"] = crossed[-1]
         events.append({"event": "warn", "level": crossed[-1], "ctx": ctx})
+        note = grab_note(session)
         return {
             "systemMessage": f"💸 Session context is {ctx / 1000:.0f}k tokens ({ctx / window:.0%} of {window / 1000:.0f}k; {cost}). "
-            "Every message re-sends all of it. When you finish this step: /handover, then /clear and /continue."
+            + (f"Biggest grabs (estimates): {note}. " if note else "")
+            + "Every message re-sends all of it. When you finish this step: /handover, then /clear and /continue."
         }
     return None
 
@@ -308,10 +319,12 @@ def decide_agent(agent: dict, state: dict, events: list | None = None) -> dict |
         return None
     state["warned"] = crossed[-1]
     events.append({"event": "agent_warn", "level": crossed[-1], "ctx": ctx})
+    note = grab_note(agent, sidechain=True, n=2)
     return {
         "systemMessage": f"💸 A subagent's context is {ctx / 1000:.0f}k tokens "
         f"({ctx / window:.0%} of {window / 1000:.0f}k; ~${agent['total']:.2f} so far). "
-        "Every further step it takes re-sends all of it."
+        + (f"Biggest grabs (estimates): {note}. " if note else "")
+        + "Every further step it takes re-sends all of it."
     }
 
 
@@ -345,9 +358,9 @@ def main() -> None:
         state = json.loads(state_file.read_text()) if state_file.exists() else {}
         events = []
         if agent:
-            out = decide_agent(read_agent(transcript), state, events)
+            out = decide_agent({**read_agent(transcript), "transcript": transcript}, state, events)
         else:
-            out = decide(hook, read_session(transcript), state, events=events)
+            out = decide(hook, {**read_session(transcript), "transcript": transcript}, state, events=events)
         if state:
             state_file.write_text(json.dumps(state))
         # Numbers only, never prompt text: read by report.py for before/after comparisons.

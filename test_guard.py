@@ -175,7 +175,7 @@ os.environ.pop("NO_COLOR", None)
 os.environ["COLORTERM"] = "truecolor"
 T = ui.effective({})
 rd = lambda session, state, theme=T: statusline.render(session, state, theme)
-plain = lambda text: re.sub(r"\033\[[0-9;]*m", "", text)
+plain = lambda text: re.sub(r"\033\[[0-9;]*m|\033\]8;;[^\a]*\a", "", text)  # colour codes and OSC 8 links
 
 assert rd(sess(0), {}) == ""  # nothing before the first reply
 line = rd(sess(150_000), {"jev": 0.1})
@@ -457,7 +457,7 @@ assert not (home / ".claude" / "commands" / "handover.md").exists()
 assert not (home / ".claude" / "session-guard" / "recall.py").is_symlink()
 home = Path(tempfile.mkdtemp())  # fresh Mac: no ~/.claude yet
 out = run()
-assert "session-guard jev on" in out, out
+assert "New-task check (Jev): session-guard jev on / off" in out and "is OFF" not in out, out
 assert json.loads((home / ".claude" / "settings.json").read_text())["statusLine"]["command"].endswith("statusline.py")
 assert "export PATH" in out, out  # ~/.local/bin is not on PATH in this test
 run("uninstall")
@@ -540,7 +540,7 @@ sl_run = lambda **env: subprocess.run([sys.executable, "statusline.py"], capture
 out = sl_run(COLORTERM="truecolor")
 assert out.count("\n") == 2 and "38;2;" in out and "$" in out.split("\n")[1], repr(out)
 assert "38;5;" in sl_run() and "38;2;" not in sl_run()
-assert "\033" not in sl_run(NO_COLOR="1") and "50k ctx" in sl_run(NO_COLOR="1")
+assert "\033[" not in sl_run(NO_COLOR="1") and "50k ctx" in sl_run(NO_COLOR="1")  # the link is not a colour: it stays
 th_file.write_text("{{{")
 assert "50k ctx" in sl_run() and sl_run().count("\n") == 1
 assert th_cli("reset").returncode == 0 and not th_file.exists() and th_cli("reset").returncode == 0
@@ -613,7 +613,7 @@ assert press(goto(st, "save"), "enter")[1] == "save" and press(goto(st, "cancel"
 assert tp.parse_keys(b"\x1b[A\x1bOB\x1b[C\x1b[Dq \r\x7f\x03\x1b[3~x\x1b") == ["up", "down", "right", "left", "q", " ", "enter", "backspace", "ctrl-c", "x", "esc"]
 # Screens.
 screen = plain(tp.render(st, 100))
-assert screen.split("\n")[0] == "session-guard theme" and "› Preset      ‹ default ›" in screen and screen.count("› ") == 1, screen
+assert screen.split("\n")[0] == "session-guard theme" and "› Preset          ‹ default ›" in screen and screen.count("› ") == 1, screen
 assert "██ #87af87" in screen and "██ #8a8a8a" in screen and "[x] spark" not in screen and "[x] hint" in screen and "[ Cancel ]" in screen
 assert screen.count("ctx") >= 3 and "14%" in screen and "85%" in screen and "q cancel" in screen
 assert "38;2;135;175;135m" in tp.render(st, 100) and "› Bar style" in plain(tp.render(goto(st, "bar"), 100))
@@ -698,8 +698,8 @@ if os.name == "posix":
     assert out.index("\x1b[?1049h") < out.index("\x1b[?1049l") < out.index("Saved. Your status line updates on the next message.")
     assert "\x1b[?25l" in out and out.rindex("\x1b[?25h") > out.index("\x1b[?25l") and "38;2;" in out and "› Preset" in plain(out), out[-300:]
     assert [f.name for f in pk_file.parent.iterdir()] == ["theme.json"]
-    # Second visit starts from the saved theme. Eight downs in one write reach "ctx"; Enter hides it; seven more reach [ Save ].
-    out, code = drive([b"\x1b[B" * 8, b"\r", b"\x1b[B" * 7, b"\r"], pk_home)
+    # Second visit starts from the saved theme. Nine downs in one write reach "ctx"; Enter hides it; eight more reach [ Save ].
+    out, code = drive([b"\x1b[B" * 9, b"\r", b"\x1b[B" * 8, b"\r"], pk_home)
     assert code == 0 and json.loads(pk_file.read_text()) == {"preset": "ocean", "segments": [list(ui.SEGMENTS[1:])]}, (code, out[-300:])
     # q, a lone Esc and Ctrl-C cancel without writing anything.
     for key in (b"q", b"\x1b", b"\x03"):
@@ -713,5 +713,476 @@ r = subprocess.run([sys.executable, "cli.py", "theme"], input="", capture_output
 assert r.returncode == 0 and "Preset" not in r.stdout and "preset    default" in r.stdout, r
 assert "The picker needs a terminal. Use: session-guard theme use <preset> / theme set key=value." in r.stdout
 assert th_cli("show").returncode == 0 and "preset    default" in th_cli("show").stdout
+
+# Grabs: what made the context grow. Synthetic transcripts; the context is exact, every split is an estimate (by text length).
+# A Read tool_use input is 17 + len(path) chars of JSON; text blocks and results are counted by length; thinking is not counted.
+import grabs  # noqa: E402
+
+def acall(msg_id, ctx, out=0, *blocks, **extra):
+    return {"type": "assistant", "message": {"id": msg_id, "model": "claude-sonnet-5", "content": list(blocks), "usage": {
+        "input_tokens": 0, "cache_read_input_tokens": ctx, "cache_creation_input_tokens": 0, "output_tokens": out}}, **extra}
+use = lambda tid, name, **inp: {"type": "tool_use", "id": tid, "name": name, "input": inp}
+result = lambda tid, text: {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content": text}]}}
+item = lambda g, label: next((i for i in g["items"] if i["label"] == label), None)
+def whole(g):  # baseline + the items always add up to the context
+    assert g["baseline"] + sum(i["tokens"] for i in g["items"]) == g["context"], g
+    assert [i["tokens"] for i in g["items"]] == sorted((i["tokens"] for i in g["items"]), reverse=True), g
+    return g
+
+# One gap: delta 10k is shared by visible length: 3000 chars of Claude's reply (text 2985 + a 15-char Bash tool input) and a 7000-char
+# result give 3,000 / 7,000 tokens. Thinking and usage.output_tokens are ignored. Prompt text, command text and contents never reach a label.
+g = whole(grabs.grabs(transcript([
+    prompt("SECRET_PROMPT please"), acall("m1", 10_000, 90_000, {"type": "thinking", "thinking": "t" * 9000}, {"type": "text", "text": "r" * 2985},
+                                          use("r1", "Bash", command="")),
+    result("r1", "SECRET_CONTENT " * 466 + "x" * 10), acall("m2", 20_000)])))
+assert g["context"] == 20_000 and g["baseline"] == 10_000, g
+assert g["items"] == [{"label": "Bash output", "tokens": 7_000, "count": 1}, {"label": "Claude's replies", "tokens": 3_000, "count": 1}], g
+assert g["calls"] == [{"context": 10_000, "delta": 0, "label": ""}, {"context": 20_000, "delta": 10_000, "label": "Bash output"}], g
+# Two results in one gap, and a response split over two lines (same id; its lengths add up: 961 + 24 + 15 = 1000): 1000 : 3000 : 1000.
+g = whole(grabs.grabs(transcript([
+    acall("m1", 10_000, 1_000, {"type": "text", "text": "r" * 961}, use("a", "Read", file_path="/p/a.py")), acall("m1", 10_000, 1_000, use("b", "Bash", command="")),
+    result("a", "x" * 3000), result("b", "y" * 1000), acall("m2", 20_000)])))
+assert [(i["label"], i["tokens"]) for i in g["items"]] == [("Read a.py", 6000), ("Bash output", 2000), ("Claude's replies", 2000)], g
+assert len(g["calls"]) == 2 and g["baseline"] == 10_000
+# Nothing visible arrived: the growth is attributed to nothing and stays in baseline.
+g = whole(grabs.grabs(transcript([acall("m1", 10_000), result("a", ""), acall("m2", 20_000)])))
+assert g["items"] == [] and g["baseline"] == 20_000, g
+# The same label across gaps is one item with a count; a non-text block weighs 6000 chars; unknown tool_use_id still counts.
+g = whole(grabs.grabs(transcript([
+    acall("m1", 10_000, 0, use("a", "Read", file_path="/p/a.py")), result("a", "x" * 100), acall("m2", 11_000, 0, use("b", "Read", file_path="/q/a.py")),
+    result("b", "x" * 100), acall("m3", 13_000, 0, use("c", "Read", file_path="/p/a.py")),
+    {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "c", "content": [{"type": "image"}]},
+                                              {"type": "tool_result", "tool_use_id": "nope", "content": "z" * 6000}]}}, acall("m4", 15_000)])))
+assert item(g, "Read a.py")["count"] == 3 and item(g, "Read a.py")["tokens"] > 1000 and item(g, "tool output")["count"] == 1, g
+# Gap 3 -> 4 by hand: 2000 tokens over 24 (reply) + 6000 (image) + 6000 (unknown id) chars.
+assert item(g, "tool output")["tokens"] == round(2000 * 6000 / 12024), g
+# Labels: tool names, file base names and fixed phrases only.
+lab = grabs.label_for
+assert [lab("Edit", {"file_path": "/a/b/c.txt"}), lab("NotebookEdit", {"notebook_path": "C:\\w\\n.ipynb"}), lab("Write", {}), lab("Agent", {}), lab("Task", {}),
+        lab("Bash", {"command": "SECRET_CMD"}), lab("Grep", {"pattern": "SECRET"}), lab("Glob", {}), lab("WebFetch", {"url": "https://secret.example/x"}),
+        lab("WebSearch", {"query": "SECRET"}), lab("mcp__db__query", {"sql": "SECRET"}), lab(None, None)] == [
+    "Edit c.txt", "NotebookEdit n.ipynb", "Write", "subagent results", "subagent results", "Bash output", "Grep results", "Glob results",
+    "web results", "web results", "mcp__db__query output", "tool output"]
+# Your messages count after the first call. Nothing secret in the data, in describe, or in a warning.
+tp_ = transcript([
+    prompt("first"), acall("m1", 100_000, 0, use("r1", "Bash", command="echo SECRET_CMD https://secret.example")), result("r1", "SECRET_OUT " * 500),
+    prompt("SECRET_PROMPT " * 1000), acall("m2", 130_000)])
+g = whole(grabs.grabs(tp_))
+assert {i["label"] for i in g["items"]} == {"Bash output", "your messages", "Claude's replies"}, g
+assert item(g, "your messages")["tokens"] > item(g, "Bash output")["tokens"] > 0
+everything = json.dumps(g) + grabs.describe(g) + guard.grab_note({"transcript": tp_})
+assert "SECRET" not in everything and "echo" not in everything and "https" not in everything, everything
+# Subagent lines: skipped by default, used with sidechain=True (a subagent file is all sidechain lines).
+side = lambda row: {**row, "isSidechain": True}
+mixed = transcript([acall("m1", 10_000, 0, use("a", "Read", file_path="/p/main.py")), result("a", "x" * 100),
+                    side(acall("s1", 90_000, 0, use("s", "Grep", pattern="q"))), side(result("s", "y" * 100)), side(acall("s2", 95_000)),
+                    acall("m2", 12_000)])
+g = grabs.grabs(mixed)
+assert g["context"] == 12_000 and {i["label"] for i in g["items"]} == {"Read main.py", "Claude's replies"}, g
+agent_file = transcript([side(prompt("task for the subagent")), side(acall("s1", 90_000, 0, use("s", "Grep", pattern="q"))),
+                         side(result("s", "y" * 100)), side(acall("s2", 95_000))])
+g = whole(grabs.grabs(agent_file, sidechain=True))
+assert g["context"] == 95_000 and g["baseline"] == 90_000 and g["items"] == [  # 5000 over 100 chars of result and a 16-char tool input
+    {"label": "Grep results", "tokens": 4310, "count": 1}, {"label": "Claude's replies", "tokens": 690, "count": 1}], g
+assert grabs.grabs(agent_file)["context"] == 0  # without the flag a subagent file is empty
+# /compact (context falls): everything before is forgotten, the new size is all baseline.
+g = whole(grabs.grabs(transcript([
+    acall("m1", 10_000, 0, use("a", "Read", file_path="/p/old.py")), result("a", "x" * 100), acall("m2", 60_000),
+    acall("m3", 20_000, 0, use("b", "Read", file_path="/p/new.py")), result("b", "x" * 100), acall("m4", 30_000),
+    acall("m5", 0)])))  # a zero-usage placeholder line is not a call
+assert g["baseline"] == 20_000 and g["items"] == [  # 10k over 100 chars of result and a 26-char tool input
+    {"label": "Read new.py", "tokens": 7937, "count": 1}, {"label": "Claude's replies", "tokens": 2063, "count": 1}], g
+assert [c["delta"] for c in g["calls"]] == [0, 50_000, -40_000, 10_000] and g["calls"][2]["label"] == "compact", g["calls"]
+# A small drop (a model switch counts the same text differently) is not a reset: items are kept and scaled by f. Below half is a reset.
+drop = lambda last: whole(grabs.grabs(transcript([
+    acall("m1", 10_000, 1_000, use("a", "Read", file_path="/p/a.py")), result("a", "x" * 100), acall("m2", 50_000), acall("m3", last), result("zz", "x" * 99)])))
+g = drop(45_000)  # f = 0.9
+assert g["baseline"] + sum(i["tokens"] for i in g["items"]) == 45_000 and g["baseline"] == 9_000, g
+assert g["items"] == [{"label": "Read a.py", "tokens": 29_032, "count": 1}, {"label": "Claude's replies", "tokens": 6_968, "count": 1}], g
+assert [c["delta"] for c in g["calls"]] == [0, 40_000, -5_000] and g["calls"][2]["label"] == "", g["calls"]
+g = drop(25_000)  # exactly f = 0.5: still not a reset
+assert g["baseline"] == 5_000 and g["items"][0] == {"label": "Read a.py", "tokens": 16_129, "count": 1}, g
+g = drop(24_999)  # just under: reset
+assert g["items"] == [] and g["baseline"] == 24_999 and g["calls"][2]["label"] == "compact", g
+# calls keeps the last 60; the shape is ints and short strings.
+g = grabs.grabs(transcript([acall(f"c{i}", 1000 * (i + 1)) for i in range(70)]))
+assert len(g["calls"]) == 60 and g["calls"][0]["context"] == 11_000 and g["calls"][-1] == {"context": 70_000, "delta": 1000, "label": ""}, g["calls"][-1]
+assert all(set(c) == {"context", "delta", "label"} and isinstance(c["context"], int) for c in g["calls"])
+# describe: +Nk, ×count only above 1, share of the context, top n, 3% threshold, empty cases.
+big = {"context": 100_000, "items": [{"label": "Read report.py", "tokens": 38_000, "count": 1}, {"label": "Bash output", "tokens": 22_000, "count": 4},
+                                     {"label": "web results", "tokens": 5_000, "count": 2}, {"label": "Glob results", "tokens": 4_000, "count": 1}]}
+assert grabs.describe(big) == "Read report.py +38k (38%), Bash output ×4 +22k (22%), web results ×2 +5k (5%)"
+assert grabs.describe(big, 1) == "Read report.py +38k (38%)" and grabs.describe({**big, "context": 150_000}, 4).endswith("web results ×2 +5k (3%)")
+assert "Glob" not in grabs.describe({**big, "context": 150_000}, 4)  # 4k of 150k is under 3%
+assert grabs.describe({**big, "context": 2_000_000}) == "" and grabs.describe({"context": 0, "items": big["items"]}) == "" and grabs.describe({}) == ""
+# describe leads with what the user can change; the conversation (replies and your messages) is a tail, only from 10% of the context.
+talk = {"context": 100_000, "items": [{"label": "Claude's replies", "tokens": 50_000, "count": 30}, {"label": "your messages", "tokens": 20_000, "count": 5},
+                                      {"label": "Read report.py", "tokens": 12_000, "count": 1}, {"label": "Bash output", "tokens": 2_000, "count": 3}]}
+assert grabs.describe(talk) == "Read report.py +12k (12%); the conversation itself (replies and your messages) is 70%"
+assert [i["label"] for i in grabs.tool_items(talk)] == ["Read report.py", "Bash output"] and len(talk["items"]) == 4  # the full list is untouched
+assert grabs.describe({**talk, "items": talk["items"][:2]}) == "the conversation itself (replies and your messages) is 70%"
+assert grabs.describe({**talk, "items": [{**talk["items"][0], "tokens": 6_000}, {**talk["items"][1], "tokens": 3_000}, *talk["items"][2:]]}) == "Read report.py +12k (12%)"
+assert grabs.describe({**talk, "items": [{**talk["items"][0], "tokens": 9_999}, *talk["items"][2:]]}) == "Read report.py +12k (12%)"  # 9.999% < 10%
+assert grabs.describe({"context": 100_000, "items": talk["items"][:2]}, 1).endswith("is 70%") and grabs.describe({"context": 0, "items": talk["items"]}) == ""
+# Odd input never raises: missing file, a folder, junk lines, odd shapes.
+empty = {"context": 0, "baseline": 0, "items": [], "calls": []}
+assert grabs.grabs(Path("/no/such/file.jsonl")) == empty and grabs.grabs(Path(tempfile.mkdtemp())) == empty
+junk = transcript([]); junk.write_text('not json\n5\n[]\nnull\n{"type": "assistant", "message": "x"}\n{"type": "user", "message": {"content": 7}}\n'
+                                       + json.dumps(acall("ok", 5000)) + '\n{"type": "assistant", "message": {"usage": {"output_tokens": "x"}}}\n')
+assert grabs.grabs(junk)["context"] == 5000 and guard.grab_note({}) == "" and guard.grab_note({"transcript": Path("/no/such")}) == ""
+
+# The warning says what grew the context, only when a level is crossed, and is the old message if grabs fails.
+grow = transcript([prompt("go"), acall("m1", 100_000, 0, use("r", "Read", file_path="/x/report.py")), result("r", "x" * 4000), acall("m2", 130_000)])
+sg = {**sess(130_000), "transcript": grow}
+old = "💸 Session context is 130k tokens (65% of 200k; ~$1.00 so far, last message ~$0.10). Every message re-sends all of it. When you finish this step: /handover, then /clear and /continue."
+msg = guard.decide({}, sg, {})["systemMessage"]
+assert msg == old.replace("Every message", "Biggest grabs (estimates): Read report.py +30k (23%). Every message"), msg
+assert guard.decide({}, {**sg, "context": 100_000}, {}) is None and guard.decide({}, sess(130_000), {})["systemMessage"] == old  # no transcript: unchanged
+real_grabs = grabs.grabs
+def boom(*a, **k):
+    raise RuntimeError("grabs broke")
+grabs.grabs = boom
+try:
+    assert guard.decide({}, sg, {})["systemMessage"] == old
+finally:
+    grabs.grabs = real_grabs
+calls_seen = []
+grabs.grabs = lambda *a, **k: calls_seen.append(1) or real_grabs(*a, **k)
+try:
+    guard.decide({}, {**sg, "context": 100_000}, {})
+    assert not calls_seen  # computed only when a warning fires
+finally:
+    grabs.grabs = real_grabs
+# A subagent's warning: short, from its own transcript.
+am = guard.decide_agent({"context": 160_000, "total": 0.5, "transcript": agent_file}, {})["systemMessage"]
+assert "Biggest grabs (estimates): Grep results +4k (5%). Every further step" in am, am
+agent_big = transcript([side(acall("s1", 100_000, 0, use("s", "Bash", command="x"))), side(result("s", "y" * 100)), side(acall("s2", 160_000))])
+am = guard.decide_agent({"context": 160_000, "total": 0.5, "transcript": agent_big}, {})["systemMessage"]
+assert "Biggest grabs (estimates): Bash output +52k (32%). Every further step" in am, am
+# End to end through the real hooks (temporary HOME): the warning and the status line, with no secret in either.
+e2e_home = Path(tempfile.mkdtemp())
+e2e = lambda script, **payload: subprocess.run([sys.executable, script], input=json.dumps({"session_id": "g", "transcript_path": str(grow), **payload}),
+                                               capture_output=True, text=True, env={**os.environ, "HOME": str(e2e_home), "NO_COLOR": "1"}).stdout
+out = e2e("guard.py", hook_event_name="UserPromptSubmit", prompt="hi")
+assert "Biggest grabs (estimates): Read report.py +30k (23%)." in json.loads(out)["systemMessage"], out
+assert "top: Read report.py +30k" in e2e("statusline.py")
+assert "report.py" not in (e2e_home / ".claude" / "session-guard" / "events.jsonl").read_text()  # numbers only in the log
+# Status line "grab" segment: dim, only once a level is reached, only if the segment is shown, never breaks the line.
+past = lambda ctx, **kw: rd({**sess(ctx), "transcript": grow, **kw}, {})
+assert "top: Read report.py +30k" in plain(past(130_000)) and paint("top: Read report.py +30k", "dim") in past(130_000)
+assert "top:" not in past(100_000) and "top:" not in plain(rd({**sess(130_000), "transcript": Path("/no/such")}, {})) and "ctx" in rd({**sess(130_000), "transcript": 5}, {})
+assert plain(past(130_000)).index("top: ") < plain(past(130_000)).index("/handover soon") and "grab" in ui.SEGMENTS and ui.SEGMENTS.index("grab") == ui.SEGMENTS.index("hint") - 1
+assert "grab" in tp.HELP and "top: Read report.py" in plain(tp.render(tp.initial_state({}), 200)) and "[x] grab" in plain(tp.render(tp.initial_state({}), 100))
+talky = transcript([prompt("a"), acall("m1", 100_000), prompt("SECRET " * 5000), acall("m2", 130_000)])  # growth is only your message
+assert "top:" not in plain(rd({**sess(130_000), "transcript": talky}, {})) and "your messages" in grabs.grabs(talky)["items"][0]["label"]
+assert guard.decide({}, {**sess(130_000), "transcript": talky}, {})["systemMessage"].count("the conversation itself (replies and your messages) is 23%") == 1
+grabs.grabs = boom
+try:
+    assert plain(past(130_000)).count("top:") == 0
+    assert "top: shown" in plain(past(130_000, grab="top: shown"))
+    assert plain(rd({**sess(130_000), "transcript": grow}, {}, only("ctx"))) == "💸 130k ctx"  # not even tried when the segment is hidden
+finally:
+    grabs.grabs = real_grabs
+
+# Theme key `link`: valid values, the default, the file, `theme set`, the picker row.
+assert ui.validate({"link": False}) == ({"link": False}, None) and "on or off" in ui.validate({"link": "yes"})[1]
+assert ui.effective({})["link"] is True and ui.effective({"link": False})["link"] is False and ui.BAR_WIDTH == (4, 20)
+assert "bar_width" in ui.validate({"bar_width": 21})[1] and "from 4 to 20" in ui.validate({"bar_width": 21})[1]
+lk_home = Path(tempfile.mkdtemp())
+(lk_home / ".claude" / "session-guard").mkdir(parents=True)
+lk_file = lk_home / ".claude" / "session-guard" / "theme.json"
+real_dir, guard.STATE_DIR = guard.STATE_DIR, lk_home / ".claude" / "session-guard"
+try:
+    lk_file.write_text('{"link": false}')
+    assert ui.load()["link"] is False
+    lk_file.write_text('{"link": "x", "emoji": false}')
+    assert ui.load()["link"] is True and ui.load()["emoji"] is False  # a bad value falls back, the rest stays
+finally:
+    guard.STATE_DIR = real_dir
+th_file.unlink(missing_ok=True)
+assert th_cli("set", "link=off").returncode == 0 and saved()["link"] is False and "link      off" in th_cli("show").stdout
+r = th_cli("set", "link=maybe")
+assert r.returncode != 0 and "on or off" in r.stderr and saved()["link"] is False
+assert th_cli("set", "link=on").returncode == 0 and saved()["link"] is True and "link      on" in th_cli("show").stdout
+assert th_cli("apply", '{"link": false}').returncode == 0 and saved() == {"link": False}
+th_file.unlink(missing_ok=True)
+assert tp.ROWS[tp.ROWS.index("emoji") + 1] == "link" and tp.initial_state({})["link"] is True and tp.to_theme(tp.initial_state({})) == {"preset": "default"}
+nolink, _ = press(goto(tp.initial_state({}), "link"), "right")
+assert nolink["link"] is False and tp.to_theme(nolink) == {"preset": "default", "link": False} and press(nolink, " ")[0]["link"] is True
+assert "Clickable ctx   ‹ on ›" in plain(tp.render(tp.initial_state({}), 100)) and "› Clickable ctx   ‹ off ›" in plain(tp.render(goto(nolink, "link"), 100))
+assert "\033]8" not in "".join(tp.preview_lines(tp.initial_state({})))  # the picker's fake sessions have no page
+
+# Status line: ctx is an OSC 8 link when the session has a page and the theme says so; the text stays the same.
+URL = "file:///tmp/p%20q/view/s.html"
+linked = rd({**sess(150_000), "link": URL}, {})
+assert linked.count(f"\033]8;;{URL}\a") == 1 and linked.count("\033]8;;\a") == 1 and linked.index("\033]8;;") < linked.index("150k ctx") < linked.rindex("\033]8;;\a")
+assert plain(linked) == plain(rd(sess(150_000), {})) and "\033]8" not in rd(sess(150_000), {})
+assert "\033]8" not in rd({**sess(150_000), "link": URL}, {}, ui.effective({"link": False}))
+assert "\033]8" not in rd({"context": 0, "total": 0.0, "last_msg": 0.0, "link": URL}, {})  # empty line: no link
+os.environ["NO_COLOR"] = "1"
+try:
+    nc = rd({**sess(150_000), "link": URL}, {})
+    assert nc.startswith(f"\033]8;;{URL}\a") and "\033[" not in nc and plain(nc) == plain(rd(sess(150_000), {}, T)) == plain(linked)
+finally:
+    os.environ.pop("NO_COLOR", None)
+
+# The session page (view.py). Synthetic session with a distinctive marker in the prompt, the Bash command and the results;
+# a tool is called "</script>..." (a file name cannot hold a slash, a tool name can).
+import re as _re  # noqa: E402
+import shutil  # noqa: E402
+import time  # noqa: E402
+import urllib.parse  # noqa: E402
+
+import view  # noqa: E402
+
+MARK = "SECRET_MARKER_Zq9"
+EVIL = "</script><b>x&y"
+pv_t = transcript([
+    prompt(f"{MARK} please"), acall("v1", 10_000), acall("v2", 40_000), prompt(f"again {MARK}"),
+    acall("v3", 5_000, 0, {"type": "text", "text": MARK * 3}, use("b", "Bash", command=f"echo {MARK}"), use("r", EVIL, q=1), use("f", "Read", file_path="/x/a&b<c>.py")),
+    result("b", MARK * 100), result("r", "y" * 5000), result("f", "z" * 100), acall("v4", 20_000)])
+pv_dir = Path(tempfile.mkdtemp())
+real_dir, guard.STATE_DIR = guard.STATE_DIR, pv_dir
+try:
+    d = view.build(pv_t)
+    assert d["session"] == pv_t.stem and d["window"] == 200_000 and d["levels"] == [120_000, 160_000, 180_000] and d["context"] == 20_000
+    assert abs(d["percent"] - 0.1) < 1e-9 and set(d["cost"]) == {"total", "agents", "last_msg"} and d["jev"] is None and isinstance(d["generated_at"], str)
+    assert [c["context"] for c in d["calls"]] == [10_000, 40_000, 5_000, 20_000] and d["calls"][2] == {"context": 5_000, "delta": -35_000, "label": "compact"}
+    assert {i["label"] for i in d["items"]} >= {"Bash output", f"{EVIL} output", "Read a&b<c>.py"} and all(i["label"] != "Claude's replies" for i in d["tool_items"])
+    assert d["baseline"] + sum(i["tokens"] for i in d["items"]) == d["context"]
+    assert d["theme"] == ui.load() == ui.effective({})
+    assert json.loads(json.dumps(d["schema"])) == {"roles": list(ui.ROLES), "presets": ui.PRESETS, "bars": ui.BARS, "bar_width": list(ui.BAR_WIDTH),
+                                                    "segments": list(ui.SEGMENTS), "default_segments": ui.DEFAULT_SEGMENTS}
+    assert view.build(pv_t, ui.effective({"preset": "ocean"}))["theme"]["preset"] == "ocean"
+    blob = json.dumps(d)
+    assert MARK not in blob and "echo" not in blob and "please" not in blob and "again" not in blob  # no prompt, command or contents
+    (pv_dir / f"{pv_t.stem}.json").write_text(json.dumps({"window": 1_000_000, "jev": 0.3}))  # the state file the status line keeps
+    d2 = view.build(pv_t)
+    assert d2["window"] == 1_000_000 and d2["levels"] == [600_000, 800_000, 900_000] and d2["jev"] == 0.3
+    (pv_dir / f"{pv_t.stem}.json").unlink()
+    # render_html: the data goes in a JSON block that cannot be closed early.
+    html = view.render_html(d)
+    m = _re.search(r'<script type="application/json" id="session-data">(.*?)</script>', html, _re.S)
+    assert m and "{{SESSION_DATA}}" not in html and html.count("</script>") == 3  # the head script, the data block and the page's code
+    assert not any(ch in m.group(1) for ch in "<>&  ") and json.loads(m.group(1)) == json.loads(json.dumps(d))
+    assert any(i["label"].startswith("</script>") for i in json.loads(m.group(1))["items"]) and MARK not in html
+    assert "<img" not in html and view.render_html({**d, "calls": [{"context": 1, "delta": 0, "label": "a b"}]}).count(" ") == 0
+    # The template itself asks for nothing from the network.
+    tpl = (Path(__file__).resolve().parent / "web" / "view.html").read_text(encoding="utf-8")
+    assert not _re.search(r"(?:src|href|action)\s*=\s*[\"']?\s*(?:https?:)?//", tpl, _re.I) and "@import" not in tpl and "<link" not in tpl.lower()
+    assert not _re.search(r"url\(\s*[\"']?\s*(?:https?:)?//", tpl, _re.I) and not _re.search(r"\b(fetch|XMLHttpRequest|sendBeacon|WebSocket|EventSource|importScripts)\b|\bimport\s*\(", tpl)
+    assert set(_re.findall(r"https?://[^\s\"')<]+", tpl)) <= {"http://www.w3.org/2000/svg"}  # an XML namespace name, never requested
+    assert 'name="color-scheme"' in tpl and "prefers-color-scheme: light" in tpl and 'name="viewport"' in tpl
+    # Appearance: dark by default whatever the system says; light and dark are driven by data-theme, with auto (no attribute) following the system.
+    assert ':root[data-theme="light"]' in tpl and ":root:not([data-theme])" in tpl and tpl.index("localStorage.getItem") < tpl.index("<style>")
+    # write(): the right place, owner-only, atomic, nothing left behind; link() is a file:// URL of it.
+    path = view.write(pv_t)
+    assert path == pv_dir / "view" / f"{pv_t.stem}.html" and path.exists() and "session-data" in path.read_text(encoding="utf-8")
+    assert os.name != "posix" or (path.stat().st_mode & 0o777 == 0o600), oct(path.stat().st_mode)
+    assert [f.name for f in path.parent.iterdir()] == [path.name]
+    url = view.link(pv_t)
+    assert url == path.as_uri() and url.startswith("file:///") and urllib.parse.unquote(urllib.parse.urlparse(url).path) == str(path)
+    old = path.read_text(encoding="utf-8")
+    real_replace = os.replace
+    def broken(*a):
+        raise OSError("disk full")
+    os.replace = broken
+    try:
+        try:
+            view.write(pv_t)
+            raise AssertionError("write should fail")
+        except OSError:
+            pass
+    finally:
+        os.replace = real_replace
+    assert path.read_text(encoding="utf-8") == old and [f.name for f in path.parent.iterdir()] == [path.name]  # old page intact, no temp file
+    # No calls at all still gives a page.
+    assert view.build(transcript([]))["calls"] == [] and "session-data" in view.render_html(view.build(transcript([])))
+finally:
+    guard.STATE_DIR = real_dir
+
+# The status line writes the page only when it is missing or older than the transcript (or the theme), and only when the link is on.
+sv_home = Path(tempfile.mkdtemp())
+sv_dir = sv_home / ".claude" / "session-guard"
+sv_page = sv_dir / "view" / f"{pv_t.stem}.html"
+sv_run = lambda **env: subprocess.run([sys.executable, "statusline.py"], capture_output=True, text=True, input=json.dumps(
+    {"session_id": pv_t.stem, "transcript_path": str(pv_t)}), env={**th_env, "HOME": str(sv_home), **env}).stdout
+out = sv_run()
+assert out.startswith(f"\033]8;;{sv_page.as_uri()}\a") and out.count("\033]8;;\a") == 1 and "20k ctx" in plain(out) and sv_page.exists(), repr(out)
+assert os.name != "posix" or sv_page.stat().st_mode & 0o777 == 0o600
+fresh = sv_page.stat().st_mtime_ns
+future = os.stat(pv_t).st_mtime + 100
+os.utime(sv_page, (future, future))
+fresh = sv_page.stat().st_mtime_ns
+assert sv_run() == out and sv_page.stat().st_mtime_ns == fresh  # fresh page: not rewritten
+os.utime(pv_t, (future + 100, future + 100))  # the transcript moved on
+sv_run()
+assert sv_page.stat().st_mtime_ns != fresh and sv_page.stat().st_mtime > future - 1000
+os.utime(sv_page, (future + 200, future + 200)); fresh = sv_page.stat().st_mtime_ns
+sv_dir.mkdir(parents=True, exist_ok=True); (sv_dir / "theme.json").write_text('{"emoji": false}')  # a newer theme also refreshes it
+os.utime(sv_dir / "theme.json", (future + 300, future + 300))
+sv_run()
+assert sv_page.stat().st_mtime_ns != fresh
+# A newer page template or view.py (an update of session-guard) also refreshes an existing page.
+real_dir, guard.STATE_DIR = guard.STATE_DIR, sv_dir
+real_tpl, real_file = view.TEMPLATE, view.__file__
+try:
+    tpl_copy = Path(tempfile.mkdtemp()) / "view.html"; shutil.copy(real_tpl, tpl_copy)
+    code_copy = tpl_copy.with_name("view.py"); shutil.copy(real_file, code_copy)
+    view.TEMPLATE, view.__file__ = tpl_copy, str(code_copy)
+    far = os.stat(sv_page).st_mtime + 1000
+    for name, touched in (("template", tpl_copy), ("code", code_copy)):
+        os.utime(sv_page, (far, far)); os.utime(tpl_copy, (far - 500, far - 500)); os.utime(code_copy, (far - 500, far - 500)); os.utime(pv_t, (far - 500, far - 500))
+        before_page = sv_page.stat().st_mtime_ns
+        assert statusline.page_link(pv_t, {}) == sv_page.as_uri() and sv_page.stat().st_mtime_ns == before_page, name  # both older: untouched
+        os.utime(touched, (far + 500, far + 500))
+        assert statusline.page_link(pv_t, guard.read_session(pv_t)) == sv_page.as_uri() and sv_page.stat().st_mtime_ns != before_page, name  # newer: rewritten
+finally:
+    view.TEMPLATE, view.__file__ = real_tpl, real_file
+    guard.STATE_DIR = real_dir
+# Same text with the link on, off, and with NO_COLOR (which keeps the link).
+(sv_dir / "theme.json").write_text("{}")
+on, nc = sv_run(COLORTERM="truecolor"), sv_run(NO_COLOR="1")
+(sv_dir / "theme.json").write_text('{"link": false}')
+off = sv_run(COLORTERM="truecolor")
+assert "\033]8" in on and "\033]8" in nc and "\033]8" not in off and "\033[" not in nc and plain(on) == plain(off) == plain(nc) and "20k ctx" in off, (on, nc, off)
+# Link off: no page is written. A page that cannot be written: plain text, no link, no error.
+sv_home2 = Path(tempfile.mkdtemp())
+(sv_home2 / ".claude" / "session-guard").mkdir(parents=True)
+(sv_home2 / ".claude" / "session-guard" / "theme.json").write_text('{"link": false}')
+subprocess.run([sys.executable, "statusline.py"], input=json.dumps({"session_id": "z", "transcript_path": str(pv_t)}), capture_output=True, text=True,
+               env={**th_env, "HOME": str(sv_home2)})
+assert not (sv_home2 / ".claude" / "session-guard" / "view").exists()
+sv_home3 = Path(tempfile.mkdtemp())
+(sv_home3 / ".claude" / "session-guard").mkdir(parents=True)
+(sv_home3 / ".claude" / "session-guard" / "view").write_text("a file where the folder should be")
+r = subprocess.run([sys.executable, "statusline.py"], input=json.dumps({"session_id": "z", "transcript_path": str(pv_t)}), capture_output=True, text=True,
+                   env={**th_env, "HOME": str(sv_home3)})
+assert r.returncode == 0 and "20k ctx" in r.stdout and "\033]8" not in r.stdout and not r.stderr, r
+# ...and in process: a broken view.write or a missing view.py gives no link.
+real_write = view.write
+view.write = boom
+try:
+    assert statusline.page_link(pv_t, {}) is None
+finally:
+    view.write = real_write
+sys.modules["view"], saved_view = None, sys.modules["view"]  # `import view` now fails
+try:
+    assert statusline.page_link(pv_t, {}) is None
+finally:
+    sys.modules["view"] = saved_view
+# Nothing yet in the session: no output and no page.
+sv_empty = transcript([prompt("hi")])
+assert subprocess.run([sys.executable, "statusline.py"], input=json.dumps({"session_id": "e", "transcript_path": str(sv_empty)}), capture_output=True, text=True,
+                      env={**th_env, "HOME": str(sv_home3)}).stdout == ""
+
+# session-guard view: temporary HOME, a transcript under its ~/.claude/projects, run from a folder that maps to that project.
+vw_home, vw_cwd = Path(tempfile.mkdtemp()), Path(os.path.realpath(tempfile.mkdtemp()))
+vw_proj = vw_home / ".claude" / "projects" / _re.sub(r"[^A-Za-z0-9]", "-", str(vw_cwd))
+vw_proj.mkdir(parents=True)
+shutil.copy(pv_t, vw_proj / "aaaa-1111.jsonl")
+older = vw_proj / "old-0000.jsonl"
+shutil.copy(pv_t, older)
+os.utime(older, (1, 1))
+vw = lambda *a, cwd=vw_cwd, **env: subprocess.run([sys.executable, str(Path("cli.py").resolve()), "view", *a], capture_output=True, text=True, cwd=cwd,
+                                                  env={**th_env, "HOME": str(vw_home), **env})
+r = vw("--no-open")
+vw_page = vw_home / ".claude" / "session-guard" / "view" / "aaaa-1111.html"  # the newest transcript of this folder
+assert r.returncode == 0 and r.stdout.strip() == str(vw_page) and vw_page.exists() and "session-data" in vw_page.read_text(encoding="utf-8"), r
+assert MARK not in vw_page.read_text(encoding="utf-8")
+r = vw("--session", "old-0000", "--no-open")
+assert r.returncode == 0 and r.stdout.strip().endswith("old-0000.html") and (vw_page.parent / "old-0000.html").exists(), r
+assert vw("--no-open", "--session=old-0000").returncode == 0
+for args in (("--session", "nope", "--no-open"), ("--session", "../x", "--no-open"), ("--session", "*", "--no-open")):
+    r = vw(*args)
+    assert r.returncode != 0 and "No session found" in r.stderr, (args, r)
+r = vw("--no-open", cwd=tempfile.mkdtemp())  # a folder with no sessions
+assert r.returncode != 0 and "No session found" in r.stderr and "--session ID" in r.stderr, r
+assert vw("--bogus").returncode != 0
+# Without --no-open it hands the file:// URL to the browser ($BROWSER is a stand-in that records what it got).
+fake = Path(tempfile.mkdtemp()) / "fake-browser.sh"
+seen_url = fake.with_name("url.txt")
+fake.write_text(f'#!/bin/sh\necho "$1" > "{seen_url}"\n'); fake.chmod(0o755)
+r = vw(BROWSER=f"{fake} %s")
+for _ in range(50):
+    if seen_url.exists() and seen_url.read_text().strip():
+        break
+    time.sleep(0.1)
+assert r.returncode == 0 and seen_url.exists() and seen_url.read_text().strip() == vw_page.as_uri(), (r, seen_url.exists())
+
+# The page's own JavaScript (needs node; skipped without it): the same text and colours as statusline.py, and a theme command ui.validate accepts.
+if shutil.which("node"):
+    bare = _re.findall(r"<script>(.*?)</script>", tpl, _re.S)  # the head script (appearance) and the page's code
+    scripts = [x for x in bare if "var Core" in x]
+    assert len(bare) == 2 and len(scripts) == 1
+    # The head script: dark by default; your saved choice; no throw when storage is missing or blocked.
+    head_js = [x for x in bare if "localStorage" in x and "var Core" not in x][0]
+    head_runner = ("const vm=require('vm');const src=require('fs').readFileSync(process.argv[1],'utf8');const out=[];"
+                   "for(const mode of ['none','throws','dark','light','auto','junk','blocked-getitem']){"
+                   "const attrs={};const meta={c:'dark',setAttribute(k,v){this.c=v}};"
+                   "const doc={documentElement:{setAttribute(k,v){attrs[k]=v},removeAttribute(k){delete attrs[k]}},querySelector:()=>meta};"
+                   "const ctx={document:doc};"
+                   "if(mode==='throws')Object.defineProperty(ctx,'localStorage',{get(){throw new Error('SecurityError')}});"
+                   "else if(mode==='blocked-getitem')ctx.localStorage={getItem(){throw new Error('denied')}};"
+                   "else if(mode!=='none')ctx.localStorage={getItem:()=>mode};"
+                   "vm.runInNewContext(src,ctx);out.push([mode,attrs['data-theme']||null,meta.c]);}console.log(JSON.stringify(out))")
+    js_dir0 = Path(tempfile.mkdtemp())
+    (js_dir0 / "head.js").write_text(head_js, encoding="utf-8")
+    assert json.loads(subprocess.run(["node", "-e", head_runner, str(js_dir0 / "head.js")], capture_output=True, text=True, check=True).stdout) == [
+        ["none", "dark", "dark"], ["throws", "dark", "dark"], ["dark", "dark", "dark"], ["light", "light", "light"], ["auto", None, "light dark"],
+        ["junk", "dark", "dark"], ["blocked-getitem", "dark", "dark"]]
+    js_dir = Path(tempfile.mkdtemp())
+    (js_dir / "core.js").write_text(scripts[0], encoding="utf-8")
+    runner = ("const C=require(process.argv[1]);const cs=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log(JSON.stringify(cs.map(c=>"
+              "c.kind==='lines'?C.statusLines(c.theme,c.data,c.ctx):c.kind==='cmd'?C.command(C.initialState(c.theme,c.data.schema)):C.shellQuote(c.text))))")
+    js = lambda cases: json.loads(subprocess.run(["node", "-e", runner, str(js_dir / "core.js")], input=json.dumps(cases), capture_output=True, text=True, check=True).stdout)
+    def to_runs(text, theme):  # [(text, hex or None)] with neighbours of the same colour merged
+        hexes = {tuple(int(theme["colors"][r][i:i + 2], 16) for i in (1, 3, 5)): theme["colors"][r] for r in ui.ROLES}
+        out = []
+        for m in _re.finditer(r"\033\[38;2;(\d+);(\d+);(\d+)m(.*?)\033\[0m|([^\033]+)", text):
+            t, c = (m.group(4), hexes[tuple(int(m.group(i)) for i in (1, 2, 3))]) if m.group(4) is not None else (m.group(5), None)
+            out.append([t, c]) if not out or out[-1][1] != c else out[-1].__setitem__(0, out[-1][0] + t)
+        return [tuple(x) for x in out]
+    themes = [ui.effective({"mode": "truecolor"}),
+              ui.effective({"mode": "truecolor", "emoji": False, "bar": "dots", "bar_width": 7, "segments": [["ctx", "bar"], ["eta", "cost", "last"], ["jev", "grab", "hint"]]}),
+              ui.effective({"mode": "truecolor", "preset": "ocean", "bar": "solid", "bar_width": 20, "colors": {"warn": "#ff9900"}, "segments": [["hint", "ctx"], ["bar"]]})]
+    cases, expected = [], []
+    for theme in themes:
+        for ctx, total, agents, jev, last in ((140_000, 2.61, 0.34, 0.1, 0.14), (650_000, 9.4, 0, 0.5, 0.0), (850_000, 17.2, 1.1, 0.93, 1.25),
+                                              (950_000, 0.5, 0.004, None, 0.5), (20_000, 0.1, 0, None, 0.02), (600_000, 1.0, 0, 0.4, 0.1), (799_999, 1.0, 0, 0.79, 0.1)):
+            session = {"context": ctx, "total": total, "last_msg": last, "agents": agents, "prompts": ["x"], "peak": ctx, "grab": "top: Read report.py +38k",
+                       "prompt_ctx": [ctx - 3 * 25_000, ctx - 2 * 25_000, ctx - 25_000, ctx]}
+            state = {"window": 1_000_000, **({"jev": jev} if jev is not None else {})}
+            data = {"levels": guard.levels(1_000_000), "window": 1_000_000, "cost": {"total": total, "agents": agents, "last_msg": last}, "prompt_ctx": session["prompt_ctx"],
+                    "jev": jev, "tool_items": [{"label": "Read report.py", "tokens": 38_000, "count": 1}], "schema": {"bars": ui.BARS}}
+            cases.append({"kind": "lines", "theme": theme, "data": data, "ctx": ctx})
+            expected.append([to_runs(line, theme) for line in statusline.render(session, state, theme).split("\n")])
+    # Compare precisely, case by case (text and the colour of every stretch).
+    results = js(cases)
+    for case, got, want in zip(cases, results, expected):
+        colors = case["theme"]["colors"]
+        have = []
+        for line in got:
+            runs = []
+            for run in line:
+                c = colors[run["role"]] if run["role"] else None
+                runs.append([run["t"], c]) if not runs or runs[-1][1] != c else runs[-1].__setitem__(0, runs[-1][0] + run["t"])
+            have.append([tuple(x) for x in runs])
+        assert have == want, (case["ctx"], have, want)
+    assert js([{"kind": "lines", "theme": themes[0], "data": cases[0]["data"], "ctx": 0}]) == [[]]  # nothing before the first reply
+    link_on = js([{"kind": "lines", "theme": themes[0], "data": cases[0]["data"], "ctx": 140_000}])[0][0][0]
+    assert link_on["link"] is True and link_on["t"] == "💸 140k ctx"
+    # The command: valid for ui.validate, whatever the layout, and safe in a shell.
+    cmd_cases = [{"kind": "cmd", "theme": t, "data": {"schema": d["schema"]}} for t in (
+        ui.effective({}), ui.effective({"preset": "colorblind", "link": False, "emoji": False, "bar_width": 4, "bar": "dots"}),
+        ui.effective({"colors": {"ok": "#123456"}, "segments": [["hint"], ["ctx", "cost"], ["bar"]]}))]
+    for case, cmd in zip(cmd_cases, js(cmd_cases)):
+        assert cmd.startswith("session-guard theme apply '") and cmd.endswith("'")
+        payload = json.loads(subprocess.run(["sh", "-c", f"printf %s {cmd[len('session-guard theme apply '):]}"], capture_output=True, text=True, check=True).stdout)
+        clean, error = ui.validate(payload)
+        assert error is None and ui.effective(clean) == case["theme"], (error, payload)
+    quoted = js([{"kind": "quote", "text": t} for t in ("a'b", "'", "", "it's \"x\" $HOME `y`")])
+    assert quoted[0] == "'a'\\''b'" and [subprocess.run(["sh", "-c", f"printf %s {q}"], capture_output=True, text=True).stdout for q in quoted] == ["a'b", "'", "", "it's \"x\" $HOME `y`"]
+
 
 print("all good")

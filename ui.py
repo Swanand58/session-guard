@@ -27,7 +27,8 @@ PRESETS = {  # name -> hex colour per role
 }
 BARS = {"blocks": "▰▱", "solid": "█░", "dots": "●○"}  # filled, empty
 MODES = ("auto", "truecolor", "256")
-SEGMENTS = ("ctx", "bar", "eta", "cost", "last", "jev", "hint")
+BAR_WIDTH = (4, 20)  # fewest and most cells
+SEGMENTS = ("ctx", "bar", "eta", "cost", "last", "jev", "grab", "hint")
 DEFAULT_SEGMENTS = [list(SEGMENTS)]  # one line
 
 
@@ -78,12 +79,13 @@ def _one_of(options):
 
 
 def _width(v):
-    if isinstance(v, bool) or not isinstance(v, int) or not 4 <= v <= 20:
-        raise ValueError(f"must be a whole number from 4 to 20 (got {v!r})")
+    lo, hi = BAR_WIDTH
+    if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+        raise ValueError(f"must be a whole number from {lo} to {hi} (got {v!r})")
     return v
 
 
-def _emoji(v):
+def _flag(v):
     if not isinstance(v, bool):
         raise ValueError(f"must be on or off (true or false in JSON), got {v!r}")
     return v
@@ -97,7 +99,7 @@ def _segments(v):
 
 
 CHECKS = {"preset": _one_of(tuple(PRESETS)), "bar": _one_of(tuple(BARS)), "bar_width": _width,
-          "emoji": _emoji, "mode": _one_of(MODES), "segments": _segments}
+          "emoji": _flag, "link": _flag, "mode": _one_of(MODES), "segments": _segments}
 
 
 def _clean(raw, strict: bool) -> tuple:
@@ -140,6 +142,7 @@ def effective(raw: dict) -> dict:
         "bar": raw.get("bar", "blocks"),
         "bar_width": raw.get("bar_width", 10),
         "emoji": raw.get("emoji", True),
+        "link": raw.get("link", True),  # ctx opens the session page (statusline.py)
         "mode": raw.get("mode", "auto"),
         "segments": raw.get("segments", DEFAULT_SEGMENTS),
     }

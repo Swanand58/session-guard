@@ -9,7 +9,7 @@ After installing, use the `session-guard` command (see README).
 
 Safe to run twice. Backs up ~/.claude/settings.json before changing it.
 An existing status line keeps working: ours wraps it (see statusline.py).
-Jev stays off; this only prints how to turn it on.
+Jev is left as it is; this only prints how to switch it.
 """
 
 from __future__ import annotations  # Python 3.9 (macOS default) support
@@ -129,7 +129,7 @@ def install() -> None:
 {path_note}
 Check it any time: session-guard status
 
-Jev new-task check is OFF. To turn it on: session-guard jev on
+New-task check (Jev): session-guard jev on / off
 
 Uninstall: session-guard uninstall   (add --purge to delete its files, reports and logs too)""")
 

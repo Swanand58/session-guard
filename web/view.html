@@ -1,0 +1,789 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="referrer" content="no-referrer">
+<title>Session · session-guard</title>
+<script>
+/* Appearance, before first paint: dark unless you chose light or auto (kept in localStorage, which a file page may not have). */
+(function () {
+  var t = "dark";
+  try { var s = localStorage.getItem("session-guard-appearance"); if (s === "light" || s === "auto" || s === "dark") t = s; } catch (e) { /* no storage: dark */ }
+  var r = document.documentElement, m = document.querySelector('meta[name="color-scheme"]');
+  if (t === "auto") r.removeAttribute("data-theme"); else r.setAttribute("data-theme", t);
+  if (m) m.setAttribute("content", t === "auto" ? "light dark" : t);
+})();
+</script>
+<style>
+/* Everything is inline: this page makes no network requests and works from file://. */
+:root {
+  color-scheme: dark;
+  --bg: #0b0b0c; --ink: #f2f2f0; --muted: #b8bdc4; --line: #2e3035; --rule: #62666e; --accent: #9db2ff;
+  --term-bg: #111113; --term-fg: #f2f2f0; --term-muted: #b8bdc4;
+  /* Overwritten from your saved theme at load. They colour data only: meter, chart levels, swatches. */
+  --ok: #87af87; --warn: #d7af5f; --danger: #d75f5f; --dim: #8a8a8a;
+  --mono: ui-monospace, "SF Mono", "Geist Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+:root:not([data-theme]) { color-scheme: light dark; }
+:root[data-theme="light"] { color-scheme: light; --bg: #fafaf8; --ink: #0e0f10; --muted: #3d434b; --line: #d0d0ca; --rule: #85857e; --accent: #1b3ab8;
+  --term-bg: #0b0b0c; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) { --bg: #fafaf8; --ink: #0e0f10; --muted: #3d434b; --line: #d0d0ca; --rule: #85857e; --accent: #1b3ab8; --term-bg: #0b0b0c; }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 500 14px/1.6 var(--mono); font-variant-numeric: tabular-nums; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.wrap { max-width: 760px; margin: 0 auto; padding: 28px 20px 96px; }
+section { margin-top: 56px; padding-top: 28px; border-top: 1px solid var(--line); }
+h1, h2, p { margin: 0; }
+h2 { font: 700 16px/1.3 var(--sans); letter-spacing: 0; }
+.sub, .stamp { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.sub { margin-top: 6px; }
+.prose { font: 500 14px/1.55 var(--sans); color: var(--muted); max-width: 64ch; }
+.head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 24px; margin-bottom: 14px; }
+
+/* title: only the id and the time */
+.top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 24px; }
+.top-r { margin-left: auto; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 28px; }
+.top h1 { font: 500 13px/1.5 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+
+/* hero */
+.hero { border-top: 0; margin-top: 56px; padding-top: 0; }
+.big { font: 700 clamp(52px, 13vw, 84px)/1 var(--mono); letter-spacing: -.05em; }
+.big .of { font: 500 16px/1.3 var(--mono); letter-spacing: 0; color: var(--muted); margin-left: 14px; white-space: nowrap; }
+.meter { position: relative; height: 6px; margin: 28px 0 34px; }
+.mz, .mf { position: absolute; inset: 0; display: flex; }
+.mz { opacity: .3; }
+.mf { clip-path: inset(0 var(--rest, 100%) 0 0); }
+.mz span, .mf span { display: block; height: 100%; flex: none; }
+.tick { position: absolute; top: 0; height: 12px; width: 2px; background: var(--ink); }
+.tick span { position: absolute; top: 15px; left: 0; transform: translateX(-50%); font-size: 13px; line-height: 1; color: var(--muted); white-space: nowrap; }
+.sum { color: var(--muted); }
+.sum .zs { display: block; margin-top: 2px; color: var(--ink); }
+.sum i { display: inline-block; width: 8px; height: 8px; margin-right: 8px; vertical-align: 0; }
+
+/* text toggles and buttons */
+fieldset.toggle { margin: 0; padding: 0; border: 0; min-width: 0; display: inline-flex; gap: 28px; }
+.toggle label { position: relative; }
+.toggle input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.toggle span { display: block; padding: 0 0 1px; color: var(--muted); border-bottom: 1px solid transparent; cursor: pointer; font-size: 13px; }
+.toggle input:checked + span { color: var(--ink); border-bottom-color: var(--ink); font-weight: 700; }
+.toggle label:not(:last-child)::after { content: "\00b7"; color: var(--muted); margin-left: 14px; position: absolute; right: -14px; top: 0; pointer-events: none; }
+.toggle input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 3px; }
+button { font: inherit; color: var(--ink); background: none; border: 0; border-bottom: 1px solid transparent; border-radius: 2px; padding: 0 2px; cursor: pointer; }
+button:disabled { color: var(--muted); opacity: .8; cursor: default; }
+button.link { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--rule); }
+button.strong { font-weight: 700; text-decoration-color: currentColor; color: var(--accent); }
+button[aria-pressed="true"] { border-bottom-color: var(--ink); }
+select, input[type=color] { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--rule); border-radius: 3px; }
+select { padding: 3px 8px; max-width: 100%; }
+.chk { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; margin-right: 20px; }
+input[type=checkbox] { flex: none; width: 14px; height: 14px; margin: 0; accent-color: var(--ink); }
+input[type=range] { accent-color: var(--ink); }
+@media (prefers-reduced-motion: no-preference) { button, .toggle span, .mf { transition: color .12s, border-color .12s, opacity .12s; } }
+
+/* chart */
+.chart-wrap { position: relative; }
+.chart-wrap svg { display: block; width: 100%; touch-action: pan-y; }
+.chart-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; }
+.chart text { font: 500 13px var(--mono); fill: var(--muted); }
+.chart .halo { paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round; }
+.chart .lvl-label { fill: var(--ink); }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .area { fill: var(--ink); fill-opacity: .04; }
+.chart .line { fill: none; stroke: var(--ink); stroke-width: 1.75; stroke-linejoin: round; }
+.chart .lvl { stroke-width: 1.5; stroke-dasharray: 3 3; }
+.chart .ctick { stroke: var(--ink); stroke-width: 1.5; }
+.chart .cross { stroke: var(--ink); stroke-opacity: .4; stroke-width: 1; }
+.chart .pt { fill: var(--ink); stroke: var(--bg); stroke-width: 2; }
+.tip { position: absolute; z-index: 2; pointer-events: none; min-width: 168px; max-width: min(300px, calc(100% - 8px)); padding: 8px 10px;
+  background: var(--bg); color: var(--ink); border: 1px solid var(--rule); border-radius: 2px; font-size: 13px; line-height: 1.5; }
+.tip[hidden] { display: none; }
+.tip .t1 { color: var(--muted); }
+.tip .t2 { font-weight: 700; }
+.tip .t3 { color: var(--muted); }
+.tip .t3 b { color: var(--ink); font-weight: 500; }
+.tip .ell { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details > summary { cursor: pointer; width: fit-content; color: var(--muted); list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "+"; display: inline-block; width: 1.4ch; color: var(--muted); }
+details[open] > summary::before { content: "\2212"; }
+details > summary:hover { color: var(--ink); }
+.more { margin-top: 12px; font-size: 13px; }
+.scroll { max-height: 260px; overflow: auto; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-top: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+caption { text-align: left; padding: 6px 0; color: var(--muted); }
+th, td { padding: 3px 12px 3px 0; text-align: left; border-top: 1px solid var(--line); white-space: nowrap; }
+th { position: sticky; top: 0; background: var(--bg); font-weight: 500; color: var(--muted); }
+td.num, th.num { text-align: right; }
+td.num { font-weight: 600; }
+td.cut { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.empty { color: var(--muted); border: 1px dashed var(--rule); padding: 24px 0; text-align: center; margin-top: 8px; }
+
+/* grabs: a ranked table, like command-line output */
+ol.grabs { list-style: none; margin: 10px 0 0; padding: 0; }
+.grab { display: grid; grid-template-columns: minmax(0, 1fr) 120px 52px 36px 44px; align-items: baseline; gap: 0 14px; padding: 3px 0; }
+.grab.head { color: var(--muted); font-size: 13px; border-bottom: 1px solid var(--line); padding-bottom: 5px; margin-bottom: 3px; }
+.g-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-bar { align-self: center; height: 3px; background: var(--line); }
+.g-bar i { display: block; height: 100%; background: var(--ink); min-width: 1px; }
+.g-num { text-align: right; font-weight: 700; }
+.g-pct, .g-count { text-align: right; color: var(--muted); font-weight: 600; }
+.grab.talk .g-label, .grab.talk .g-num { color: var(--muted); }
+.grab.talk .g-bar i { background: var(--muted); }
+.baseline { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--rule); }
+.baseline ol.grabs { margin: 0; }
+.grab.base { color: var(--muted); }
+.grab.base .g-bar { visibility: hidden; }
+.baseline p { margin-top: 2px; font-size: 13px; color: var(--muted); }
+.foot { margin-top: 28px; }
+@media (max-width: 560px) {
+  .grab { grid-template-columns: minmax(0, 1fr) auto auto auto; grid-template-areas: "l l l l" "b n p c"; row-gap: 2px; padding: 5px 0; }
+  .grab.head { display: none; }
+  .g-label { grid-area: l; } .g-bar { grid-area: b; } .g-num { grid-area: n; min-width: 5ch; } .g-pct { grid-area: p; min-width: 4ch; } .g-count { grid-area: c; min-width: 4ch; }
+  .wrap { padding: 20px 16px 72px; }
+}
+
+/* theme */
+details#studio > summary { color: var(--ink); }
+details#studio > summary h2 { display: inline; }
+.edited { color: var(--muted); font-size: 13px; margin-left: 14px; }
+.edited[hidden] { display: none; }
+.studio-in { margin-top: 12px; }
+.preview-col { background: var(--bg); padding: 4px 0 10px; }
+@media (min-width: 640px) and (min-height: 720px) { .preview-col { position: sticky; top: 0; z-index: 3; } }
+.pv-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; margin: 8px 0; font-size: 13px; color: var(--muted); }
+.term { background: var(--term-bg); color: var(--term-fg); border: 1px solid var(--rule); border-radius: 2px; }
+.term[data-bg="light"] { --term-bg: #fdfdfb; --term-fg: #0e0f10; --term-muted: #3d434b; }
+.term-body { padding: 10px 12px 12px; overflow-x: auto; }
+.term-body .cap { font-size: 13px; color: var(--term-muted); margin: 10px 0 1px; }
+.term-body .cap:first-child { margin-top: 0; }
+.term-body .ln { white-space: pre; width: max-content; min-width: 100%; }
+.term-body .ln u { text-decoration-style: dotted; text-underline-offset: 3px; }
+.term-body .none { color: var(--term-muted); }
+.form { margin-top: 14px; }
+.f { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 4px 16px; padding: 7px 0; align-items: center; }
+.f.top { align-items: start; }
+.f > label, .f > .fl { color: var(--muted); }
+.colors { display: grid; gap: 6px; }
+.crow { display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 12px; }
+input[type=color] { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; padding: 0; cursor: pointer; border-radius: 2px; }
+input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+input[type=color]::-webkit-color-swatch { border: 0; border-radius: 1px; }
+input[type=color]::-moz-color-swatch { border: 0; border-radius: 1px; }
+.crow .d { color: var(--muted); margin-left: 10px; }
+.range { display: flex; align-items: center; gap: 12px; max-width: 320px; }
+.range input { flex: 1; min-width: 0; }
+.range output { min-width: 2ch; text-align: right; }
+ul.segs { list-style: none; margin: 0; padding: 0; }
+.sg { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0; border-top: 1px solid var(--line); }
+.sg:first-child { border-top: 0; }
+.sg.off .nm { opacity: .8; }
+.sg .nm { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1; cursor: pointer; }
+.sg .nm input { align-self: center; }
+.sg .nm code { font: inherit; min-width: 5ch; }
+.sg .nm span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sg .btns { flex: none; display: inline-flex; gap: 8px; }
+li.brk { padding: 0 0 0 28px; color: var(--muted); font-size: 13px; border-top: 1px dashed var(--rule); }
+@media (max-width: 560px) { .sg .nm span { display: none; } .f { grid-template-columns: 84px minmax(0, 1fr); } }
+.cmd-box { margin-top: 18px; }
+pre.cmd { margin: 0 0 10px; padding: 10px 12px; background: var(--term-bg); color: var(--term-fg); border: 1px solid var(--rule); border-radius: 2px;
+  font: 500 13px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 190px; overflow: auto; }
+.cmd-actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; }
+.status { color: var(--muted); font-size: 13px; }
+footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line); }
+.err { border: 1px solid var(--danger); padding: 12px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<noscript><div class="wrap"><p>This page draws its charts with JavaScript, which is switched off. Nothing is sent anywhere.</p></div></noscript>
+<div class="wrap" id="app" hidden>
+
+<header class="top">
+  <h1><code id="sid" title=""></code></h1>
+  <div class="top-r">
+    <p class="stamp" id="stamp"></p>
+    <fieldset class="toggle" id="appearance" aria-label="appearance (page colours: dark, light or follow the system)">
+      <label><input type="radio" name="appearance" value="dark"><span>dark</span></label>
+      <label><input type="radio" name="appearance" value="light"><span>light</span></label>
+      <label><input type="radio" name="appearance" value="auto"><span>auto</span></label>
+    </fieldset>
+  </div>
+</header>
+
+<section class="hero" aria-labelledby="h-ctx">
+  <h2 class="sr-only" id="h-ctx">Context now</h2>
+  <p class="big"><span id="ctx-now">0</span><span class="of" id="ctx-of"></span></p>
+  <div class="meter" id="meter" role="img"><div class="mz" id="mz"></div><div class="mf" id="mf"></div></div>
+  <p class="sum" id="summary"></p>
+</section>
+
+<section aria-labelledby="h-chart">
+  <div class="head">
+    <h2 id="h-chart">Context growth</h2>
+    <fieldset class="toggle" aria-label="Chart scale">
+      <label><input type="radio" name="scale" value="fit" checked><span>fit to data</span></label>
+      <label><input type="radio" name="scale" value="full"><span>full window</span></label>
+    </fieldset>
+  </div>
+  <div id="chart-box">
+    <div class="chart-wrap" id="chart-wrap" tabindex="0" role="img" aria-describedby="chart-help">
+      <svg class="chart" id="chart" aria-hidden="true" focusable="false"></svg>
+      <div class="tip" id="tip" hidden></div>
+    </div>
+    <p class="sr-only" id="chart-help">Use the left and right arrow keys to move between calls. Shift moves ten at a time; Home and End jump to the ends.</p>
+    <p class="sr-only" id="chart-live" aria-live="polite"></p>
+    <p class="sub" id="legend"></p>
+  </div>
+  <p class="empty" id="chart-empty" hidden>No calls yet. The chart appears after the first reply.</p>
+  <details class="more" id="calls-details">
+    <summary>table of calls</summary>
+    <div class="scroll"><table id="calls-table"><caption>Context per call, oldest first</caption>
+      <thead><tr><th class="num" scope="col">call</th><th class="num" scope="col">context</th><th class="num" scope="col">change</th><th scope="col">biggest part of the change</th></tr></thead>
+      <tbody></tbody></table></div>
+  </details>
+</section>
+
+<section aria-labelledby="h-grabs">
+  <div class="head">
+    <h2 id="h-grabs">Biggest grabs</h2>
+    <label class="chk" style="margin:0"><input type="checkbox" id="with-talk"> include the conversation itself (replies and your messages)</label>
+  </div>
+  <p class="sub" id="split"></p>
+  <ol class="grabs" id="grabs"></ol>
+  <p class="empty" id="grabs-empty" hidden></p>
+  <p class="more"><button type="button" class="link" id="more" hidden aria-expanded="false"></button></p>
+  <div class="baseline" id="baseline"></div>
+  <p class="prose foot">Sizes are estimates; the total is exact. This page holds no prompt text, commands or file contents, only tool names, file base names and numbers.</p>
+</section>
+
+<section aria-labelledby="h-studio">
+<details id="studio">
+  <summary><h2 id="h-studio">Theme</h2><span class="edited" id="edited" hidden>unsaved changes</span></summary>
+  <div class="studio-in">
+    <p class="sub">A file page cannot write your settings, so copy the command and paste it in a terminal.</p>
+    <div class="preview-col">
+      <div class="pv-head">
+        <span>status line preview, with your numbers</span>
+        <fieldset class="toggle" aria-label="Terminal background">
+          <label><input type="radio" name="termbg" value="dark" checked><span>dark</span></label>
+          <label><input type="radio" name="termbg" value="light"><span>light</span></label>
+        </fieldset>
+      </div>
+      <div class="term" id="term" data-bg="dark" role="group" aria-label="Status line preview"><div class="term-body" id="term-body"></div></div>
+      <p class="sub">Exact colours. A 256-colour terminal rounds them.</p>
+    </div>
+    <div class="form">
+      <div class="f"><label for="f-preset">preset</label><div><select id="f-preset"></select></div></div>
+      <div class="f top"><span class="fl" id="l-colors">colours</span><div class="colors" id="colors" role="group" aria-labelledby="l-colors"></div></div>
+      <div class="f"><label for="f-bar">bar style</label><div><select id="f-bar"></select></div></div>
+      <div class="f"><label for="f-width">bar width</label><div class="range"><input type="range" id="f-width" step="1"><output id="o-width" for="f-width"></output></div></div>
+      <div class="f"><span class="fl">options</span><div>
+        <label class="chk"><input type="checkbox" id="f-emoji"> emoji</label><label class="chk"><input type="checkbox" id="f-link"> clickable <code>ctx</code> (opens this page)</label></div></div>
+      <div class="f top"><span class="fl" id="l-segs">segments</span><div>
+        <ul class="segs" id="segs" aria-labelledby="l-segs"></ul>
+        <p class="sub">Tick to show. "break" starts a new line after that segment.</p></div></div>
+    </div>
+    <div class="cmd-box">
+      <pre class="cmd" id="cmd" tabindex="0" aria-label="The command to paste in a terminal"></pre>
+      <div class="cmd-actions">
+        <button type="button" class="link strong" id="copy">Copy command</button>
+        <button type="button" class="link" id="reset">Reset</button>
+        <span class="status" id="copy-status" role="status"></span>
+      </div>
+    </div>
+  </div>
+</details>
+</section>
+
+<footer>
+  <p class="sub">Snapshot of one session, rewritten when your status line next updates: reload the tab, or run <code>session-guard view</code>. A local file; it sends nothing anywhere.</p>
+</footer>
+</div>
+
+<script type="application/json" id="session-data">{{SESSION_DATA}}</script>
+<script>
+"use strict";
+/* ============================ Pure helpers (no DOM) ============================
+   Everything here is also loaded by the repo's self-check (test_guard.py) under node. */
+var Core = (function () {
+  var HEX = /^#[0-9a-f]{6}$/i;
+  var SEG_HELP = { ctx: "context size", bar: "how full the window is", eta: "messages left to the next level",
+    cost: "cost so far", last: "cost of your last message", jev: "new-task check", grab: "what grew the context most", hint: "/handover hint" };
+
+  function fmtK(n) { return Math.abs(n) >= 1000 ? Math.round(n / 1000) + "k" : String(Math.round(n)); }
+  function fmtDelta(n) {
+    var a = Math.abs(n), s = n < 0 ? "−" : "+";
+    return s + (a >= 10000 ? Math.round(a / 1000) + "k" : a >= 1000 ? (a / 1000).toFixed(1) + "k" : String(a));
+  }
+  function fmtWindow(w) { return w >= 1e6 ? Number((w / 1e6).toFixed(2)) + "M" : fmtK(w); }
+  function pct(x) { return Math.round(x * 100) + "%"; }
+  function usd(x) { return "$" + x.toFixed(2); }
+  function zone(tokens, lvls) { var n = 0; for (var i = 0; i < 2 && i < lvls.length; i++) if (tokens >= lvls[i]) n++; return ["ok", "warn", "danger"][n]; }
+
+  /* ---- Port of statusline.eta ---- */
+  function eta(promptCtx, ctx, lvls) {
+    var g = [], i;
+    for (i = 1; i < promptCtx.length; i++) if (promptCtx[i] >= promptCtx[i - 1]) g.push(promptCtx[i] - promptCtx[i - 1]);
+    var nxt = lvls.filter(function (l) { return l > ctx; });
+    var sum = g.reduce(function (a, b) { return a + b; }, 0);
+    if (!g.length || !nxt.length || sum <= 0) return "";
+    var n = Math.ceil((nxt[0] - ctx) / (sum / g.length));
+    return "~" + (n <= 99 ? n : "99+") + " " + (n === 1 ? "msg" : "msgs") + " to " + Math.floor(nxt[0] / 1000) + "k";
+  }
+
+  /* ---- Port of statusline.render: the same text and colour roles for each segment ----
+     d: the page data. theme: {colors, bar, bar_width, emoji, link, segments}. ctx: tokens.
+     Returns lines; a line is a list of runs {t: text, role: ok|warn|danger|dim|null, link?: true}. Rounding of x.5 can differ by one
+     from Python's (half-even) in rare cases. */
+  function statusLines(theme, d, ctx) {
+    if (!ctx) return [];
+    var lvls = d.levels, window_ = d.window;
+    var reached = lvls.filter(function (l) { return ctx >= l; }).length;
+    var glyphs = Array.from(d.schema.bars[theme.bar] || d.schema.bars.blocks);
+    var width = theme.bar_width;
+    var filled = Math.min(width, Math.ceil(ctx / window_ * width));
+    var emoji = function (e) { return theme.emoji ? e + " " : ""; };
+    var seg = {};
+    seg.ctx = [{ t: emoji("💸") + Math.round(ctx / 1000) + "k ctx", role: zone(ctx, lvls), link: !!theme.link }];
+    var runs = [], i, z, last = null;
+    for (i = 0; i < filled; i++) {  // one run per stretch of same-zone cells
+      z = zone(i / width * window_, lvls);
+      if (last && last.role === z) last.t += glyphs[0]; else { last = { t: glyphs[0], role: z }; runs.push(last); }
+    }
+    if (width - filled > 0) runs.push({ t: glyphs[1].repeat(width - filled), role: "dim" });
+    runs.push({ t: " ", role: null }, { t: pct(ctx / window_), role: zone(ctx, lvls) });
+    seg.bar = runs;
+    var e = eta(d.prompt_ctx || [], ctx, lvls);
+    seg.eta = e ? [{ t: e, role: null }] : [];
+    seg.cost = [{ t: usd(d.cost.total) + (d.cost.agents >= 0.005 ? " (agents " + usd(d.cost.agents) + ")" : ""), role: null }];
+    seg.last = [{ t: "last msg " + usd(d.cost.last_msg), role: null }];
+    seg.jev = [];
+    if (d.jev !== null && d.jev !== undefined) {
+      seg.jev = d.jev >= 0.8 ? [{ t: emoji("🧭") + "new task? " + pct(d.jev), role: "danger" }]
+        : d.jev >= 0.4 ? [{ t: emoji("🧭") + "unsure " + pct(d.jev), role: "warn" }]
+        : [{ t: emoji("🧭") + "same task", role: "ok" }];
+    }
+    var top = (d.tool_items || [])[0];
+    seg.grab = reached && top ? [{ t: "top: " + top.label + " +" + Math.round(top.tokens / 1000) + "k", role: "dim" }] : [];
+    seg.hint = reached === 1 ? [{ t: "/handover soon", role: "warn" }] : reached > 1 ? [{ t: "/handover now", role: "danger" }] : [];
+    return theme.segments.map(function (names) {
+      var out = [];
+      names.forEach(function (n) {
+        if (!(seg[n] && seg[n].length)) return;
+        if (out.length) out.push({ t: " · ", role: "dim" });
+        out.push.apply(out, seg[n]);
+      });
+      return out;
+    }).filter(function (l) { return l.length; });
+  }
+
+  /* ---- Studio state <-> the theme JSON that `session-guard theme apply` takes (see ui.py) ---- */
+  function initialState(theme, schema) {
+    var order = [], breaks = {}, shown = {};
+    theme.segments.forEach(function (line, li) {
+      line.forEach(function (n) { order.push(n); shown[n] = true; });
+      if (li < theme.segments.length - 1) breaks[line[line.length - 1]] = true;
+    });
+    schema.segments.forEach(function (n, idx) {  // hidden ones go back where the usual order puts them
+      if (shown[n]) return;
+      var at = -1;
+      order.forEach(function (m, pos) { if (schema.segments.indexOf(m) < idx) at = pos; });
+      order.splice(at + 1, 0, n);
+      if (at >= 0 && breaks[order[at]]) { breaks[n] = true; delete breaks[order[at]]; }
+    });
+    var colors = {};
+    schema.roles.forEach(function (r) { colors[r] = theme.colors[r]; });
+    return { preset: theme.preset, colors: colors, bar: theme.bar, bar_width: theme.bar_width, emoji: theme.emoji, link: theme.link,
+      mode: theme.mode, order: order, shown: shown, breaks: breaks };
+  }
+  function linesOf(s) {
+    var lines = [], cur = [];
+    s.order.forEach(function (n) {
+      if (s.shown[n]) cur.push(n);
+      if (s.breaks[n] && cur.length) { lines.push(cur); cur = []; }
+    });
+    if (cur.length) lines.push(cur);
+    return lines;
+  }
+  function themeOf(s) {  // exactly what ui.validate accepts
+    return { preset: s.preset, colors: s.colors, bar: s.bar, bar_width: s.bar_width, emoji: s.emoji, link: s.link, mode: s.mode, segments: linesOf(s) };
+  }
+  function shellQuote(text) { return "'" + text.replace(/'/g, "'\\''") + "'"; }
+  function command(s) { return "session-guard theme apply " + shellQuote(JSON.stringify(themeOf(s))); }
+  function safeColor(c, fallback) { return typeof c === "string" && HEX.test(c) ? c : fallback; }
+
+  return { fmtK: fmtK, fmtDelta: fmtDelta, fmtWindow: fmtWindow, pct: pct, usd: usd, zone: zone, eta: eta, statusLines: statusLines,
+    initialState: initialState, linesOf: linesOf, themeOf: themeOf, shellQuote: shellQuote, command: command, safeColor: safeColor, SEG_HELP: SEG_HELP };
+})();
+if (typeof module !== "undefined") module.exports = Core;
+
+/* ================================ The page (DOM) ================================ */
+function boot() {
+  var D = JSON.parse(document.getElementById("session-data").textContent);
+  var $ = function (id) { return document.getElementById(id); };
+  var NS = "http://www.w3.org/2000/svg";  // an XML namespace name, not a request
+  var F = Core;
+  var DEFAULTS = D.schema.presets["default"];
+  var ROLE_HELP = { ok: "below the first level", warn: "to the second level", danger: "beyond it", dim: "separators, empty cells" };
+  var theme = D.theme;
+  var palette = {};
+  D.schema.roles.forEach(function (r) { palette[r] = F.safeColor(theme.colors[r], DEFAULTS[r]); });
+  var el = function (tag, attrs, parent, text) {
+    var n = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+    if (text !== undefined) n.textContent = text;
+    if (parent) parent.appendChild(n);
+    return n;
+  };
+  var svg = function (tag, attrs, parent, text) {
+    var n = document.createElementNS(NS, tag);
+    Object.keys(attrs || {}).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+    if (text !== undefined) n.textContent = text;
+    if (parent) parent.appendChild(n);
+    return n;
+  };
+  var root = document.documentElement.style;
+  D.schema.roles.forEach(function (r) { root.setProperty("--" + r, palette[r]); });
+  document.title = "Session " + D.session.slice(0, 8) + " · session-guard";
+  $("sid").textContent = D.session; $("sid").title = D.session;
+  var d0 = new Date(D.generated_at);
+  $("stamp").textContent = "generated " + (isNaN(d0) ? D.generated_at : d0.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
+
+  /* ---------- appearance (dark, light or follow the system); the head script has applied the saved choice ---------- */
+  var ap = document.documentElement.getAttribute("data-theme") || "auto";
+  Array.prototype.forEach.call(document.querySelectorAll("input[name=appearance]"), function (r) {
+    r.checked = r.value === ap;
+    r.addEventListener("change", function () {
+      var root = document.documentElement, meta = document.querySelector('meta[name="color-scheme"]');
+      if (r.value === "auto") root.removeAttribute("data-theme"); else root.setAttribute("data-theme", r.value);
+      if (meta) meta.setAttribute("content", r.value === "auto" ? "light dark" : r.value);
+      try { localStorage.setItem("session-guard-appearance", r.value); } catch (e) { /* no storage: the choice lasts until you leave the page */ }
+    });
+  });
+
+  /* ---------- hero ---------- */
+  var ctx = D.context, win = D.window, lv = D.levels;
+  var reached = lv.filter(function (l) { return ctx >= l; }).length;
+  $("ctx-now").textContent = ctx ? F.fmtK(ctx) : "0";
+  $("ctx-of").textContent = "of " + F.fmtWindow(win) + " · " + (ctx ? F.pct(ctx / win) : "no replies yet");
+  var meter = $("meter");
+  var p1 = lv.length > 0 ? lv[0] / win * 100 : 100, p2 = lv.length > 1 ? lv[1] / win * 100 : 100;
+  [["mz"], ["mf"]].forEach(function (id) {  // the zones, in your theme's colours: ok to the first level, warn to the second, then danger
+    [[p1, "ok"], [p2 - p1, "warn"], [100 - p2, "danger"]].forEach(function (z) {
+      var s = el("span", {}, $(id[0])); s.style.width = z[0] + "%"; s.style.background = "var(--" + z[1] + ")";
+    });
+  });
+  meter.style.setProperty("--rest", (100 - Math.min(100, ctx / win * 100)) + "%");
+  meter.setAttribute("aria-label", "Context " + F.fmtK(ctx) + " of " + F.fmtWindow(win) + ", " + F.pct(ctx / win) + ". Warning levels at " +
+    lv.map(function (l) { return F.pct(l / win); }).join(", ") + ".");
+  lv.forEach(function (l) {
+    var t = el("div", { "class": "tick", "aria-hidden": "true" }, meter);
+    t.style.left = (l / win * 100) + "%";
+    el("span", {}, t, F.pct(l / win));
+  });
+  var sum = $("summary");
+  sum.textContent = [F.usd(D.cost.total) + " so far", D.cost.agents >= 0.005 ? F.usd(D.cost.agents) + " subagents" : "", F.usd(D.cost.last_msg) + " last message",
+    F.fmtWindow(win) + " window"].filter(Boolean).join(" · ");
+  if (lv.length) {
+    var zs = el("span", { "class": "zs" }, sum), zone = F.zone(ctx, lv);
+    el("i", { style: "background: var(--" + zone + ")" }, zs);
+    zs.appendChild(document.createTextNode(reached === 0 ? "ok, below " + F.pct(lv[0] / win)
+      : reached === 1 ? "past " + F.pct(lv[0] / win) + " · /handover soon" : "past " + F.pct(lv[reached - 1] / win) + " · /handover now"));
+  }
+
+  /* ---------- chart ---------- */
+  var calls = D.calls, sel = -1, scale = "fit";
+  var wrap = $("chart-wrap"), chart = $("chart"), tip = $("tip");
+  var geo = null;
+  var compacts = calls.filter(function (c) { return c.label === "compact"; }).length;
+  var peak = calls.reduce(function (m, c) { return Math.max(m, c.context); }, 0);
+  wrap.setAttribute("aria-label", calls.length ? "Context per call, " + calls.length + (calls.length === 1 ? " call" : " calls") + ": from " + F.fmtK(calls[0].context) + " to " +
+    F.fmtK(calls[calls.length - 1].context) + " tokens, peak " + F.fmtK(peak) + ", window " + F.fmtWindow(win) + ". Warning levels at " +
+    lv.map(function (l) { return F.fmtK(l); }).join(", ") + (compacts ? ". The context was reset " + compacts + (compacts === 1 ? " time." : " times.") : ".") +
+    " The full data is in the table below." : "No calls yet.");
+  $("legend").textContent = calls.length ? "Context at each call" + (calls.length >= 200 ? " (latest 200)" : "") + ". Dashed: warning levels."
+    + (compacts ? " Tick: compact or clear." : "") + " Hover, touch or use the arrow keys." : "";
+
+  function niceTicks(max) {
+    var raw = Math.max(max, 1000) / 3, p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
+    var step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p, t = [];
+    for (var v = 0; v <= max + 1e-6; v += step) t.push(Math.round(v));
+    return t;
+  }
+  function ymaxFor() {
+    if (scale === "full") return Math.max(win, peak * 1.05);
+    var next = lv.filter(function (l) { return l > peak; })[0];
+    return Math.max(peak * 1.12, next ? next * 1.06 : Math.max(win, peak * 1.08), 1000);
+  }
+  function drawChart() {
+    $("chart-box").hidden = !calls.length; $("chart-empty").hidden = !!calls.length;
+    if (!calls.length) return;
+    var W = Math.max(280, wrap.clientWidth || 640), H = W < 520 ? 200 : 230, n = calls.length;
+    var m = { l: 50, r: 4, t: 8, b: 26 }, pw = W - m.l - m.r, ph = H - m.t - m.b, ymax = ymaxFor();
+    var x = function (i) { return n === 1 ? m.l + pw / 2 : m.l + pw * i / (n - 1); };
+    var y = function (v) { return m.t + ph * (1 - v / ymax); };
+    geo = { x: x, y: y, m: m, pw: pw, W: W, H: H };
+    chart.setAttribute("viewBox", "0 0 " + W + " " + H);
+    chart.setAttribute("height", H);
+    chart.textContent = "";
+    niceTicks(ymax).forEach(function (v) {
+      svg("line", { "class": "grid", x1: m.l, x2: m.l + pw, y1: y(v), y2: y(v) }, chart);
+      svg("text", { x: m.l - 8, y: y(v) + 4, "text-anchor": "end" }, chart, F.fmtK(v));
+    });
+    var labels = n === 1 ? [[0, "middle"]] : [[0, "start"], [n - 1, "end"]];
+    labels.forEach(function (a) { svg("text", { x: x(a[0]), y: H - 6, "text-anchor": a[1] }, chart, "call " + (a[0] + 1)); });
+    // Warning levels, labelled inline at the right edge, in your theme's colours.
+    lv.forEach(function (l, i) {
+      if (l > ymax) return;
+      svg("line", { "class": "lvl", x1: m.l, x2: m.l + pw, y1: y(l), y2: y(l), stroke: "var(--" + (i === 0 ? "warn" : "danger") + ")" }, chart);
+      // Inline label at the right edge, on the side of the line the data is not on. If the data crosses the line there, use the left edge.
+      var near = calls.filter(function (c, k) { return x(k) > m.l + pw - 100; }), below = near.every(function (c) { return c.context < l; }),
+        above = near.every(function (c) { return c.context > l; });
+      var tx = below || above ? m.l + pw : m.l + 6, ty = below || !above ? y(l) - 5 : y(l) + 14;
+      if (ty < m.t + 8) ty = y(l) + 14;
+      svg("text", { "class": "halo lvl-label", x: tx, y: ty, "text-anchor": below || above ? "end" : "start" }, chart, F.pct(l / win) + " · " + F.fmtK(l));
+    });
+    var pts = calls.map(function (c, i) { return x(i).toFixed(1) + "," + y(c.context).toFixed(1); });
+    if (n > 1) {
+      svg("path", { "class": "area", d: "M" + x(0).toFixed(1) + "," + y(0) + " L" + pts.join(" L") + " L" + x(n - 1).toFixed(1) + "," + y(0) + " Z" }, chart);
+      svg("polyline", { "class": "line", points: pts.join(" ") }, chart);
+    } else svg("circle", { "class": "pt", cx: x(0), cy: y(calls[0].context), r: 3 }, chart);
+    calls.forEach(function (c, i) {  // compact or clear: a small tick on the baseline with a label
+      if (c.label !== "compact") return;
+      svg("line", { "class": "ctick", x1: x(i), x2: x(i), y1: y(0) - 12, y2: y(0) + 4 }, chart);
+      if (x(i) - m.l > 64 && m.l + pw - x(i) > 64) svg("text", { x: x(i), y: H - 6, "text-anchor": "middle" }, chart, "compact");  // under the axis, clear of the data and the end labels
+    });
+    svg("g", { id: "hover" }, chart);
+    if (sel >= 0) showTip(Math.min(sel, n - 1), false);
+  }
+  function showTip(i, announce) {
+    sel = i;
+    var c = calls[i], h = chart.querySelector("#hover");
+    h.textContent = "";
+    svg("line", { "class": "cross", x1: geo.x(i), x2: geo.x(i), y1: geo.m.t, y2: geo.y(0) }, h);
+    svg("circle", { "class": "pt", cx: geo.x(i), cy: geo.y(c.context), r: 3.5 }, h);
+    tip.hidden = false; tip.textContent = "";
+    el("div", { "class": "t1" }, tip, "call " + (i + 1) + " of " + calls.length);
+    el("div", { "class": "t2" }, tip, c.context.toLocaleString("en-US") + " tokens · " + F.pct(c.context / win));
+    var t3 = el("div", { "class": "t3" }, tip);
+    var text = "";
+    if (c.label === "compact") { text = "context was reset here (compact or clear)"; t3.textContent = text; }
+    else if (i === 0) { text = "first call in this list"; t3.textContent = text; }
+    else {
+      text = F.fmtDelta(c.delta) + " since the previous call";
+      el("div", {}, t3, text);
+      if (c.label) {
+        var b = el("span", { "class": "ell", title: c.label }, t3, "biggest part: ");
+        el("b", {}, b, c.label);
+        text += ". Biggest part: " + c.label;
+      }
+    }
+    var xpx = geo.x(i) * wrap.clientWidth / geo.W, ypx = geo.y(c.context);
+    var tw = tip.offsetWidth, th = tip.offsetHeight, W = wrap.clientWidth;
+    var left = xpx + 12 + tw > W - 4 ? xpx - 12 - tw : xpx + 12;
+    tip.style.left = Math.max(2, left) + "px";
+    tip.style.top = Math.max(2, Math.min(ypx - th - 8, geo.H - th - 26)) + "px";
+    if (announce) $("chart-live").textContent = "Call " + (i + 1) + ": " + c.context + " tokens. " + text;
+  }
+  function hideTip() { sel = -1; tip.hidden = true; var h = chart.querySelector("#hover"); if (h) h.textContent = ""; }
+  function indexAt(clientX) {
+    var r = chart.getBoundingClientRect(), x = (clientX - r.left) * geo.W / r.width;
+    return calls.length === 1 ? 0 : Math.max(0, Math.min(calls.length - 1, Math.round((x - geo.m.l) / geo.pw * (calls.length - 1))));
+  }
+  wrap.addEventListener("pointermove", function (e) { if (calls.length && geo) showTip(indexAt(e.clientX), false); });
+  wrap.addEventListener("pointerdown", function (e) { if (calls.length && geo) showTip(indexAt(e.clientX), false); });
+  wrap.addEventListener("pointerleave", function () { if (document.activeElement !== wrap) hideTip(); });
+  wrap.addEventListener("blur", hideTip);
+  wrap.addEventListener("keydown", function (e) {
+    if (!calls.length) return;
+    var step = e.shiftKey ? 10 : 1, i = sel < 0 ? calls.length - 1 : sel, k = e.key;
+    if (k === "ArrowLeft") i -= step; else if (k === "ArrowRight") i += step;
+    else if (k === "Home") i = 0; else if (k === "End") i = calls.length - 1;
+    else if (k === "Escape") { hideTip(); return; } else return;
+    e.preventDefault();
+    showTip(Math.max(0, Math.min(calls.length - 1, i)), true);
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("input[name=scale]"), function (r) {
+    r.addEventListener("change", function () { scale = r.value; drawChart(); });
+  });
+  var raf = 0, lastW = 0;
+  var redraw = function () { cancelAnimationFrame(raf); raf = requestAnimationFrame(function () { if (wrap.clientWidth !== lastW) { lastW = wrap.clientWidth; drawChart(); } }); };
+  if (window.ResizeObserver) new ResizeObserver(redraw).observe(wrap); else window.addEventListener("resize", redraw);
+
+  var tb = document.querySelector("#calls-table tbody");
+  calls.forEach(function (c, i) {
+    var tr = el("tr", {}, tb);
+    el("td", { "class": "num" }, tr, String(i + 1));
+    el("td", { "class": "num" }, tr, c.context.toLocaleString("en-US"));
+    el("td", { "class": "num" }, tr, i === 0 ? "–" : F.fmtDelta(c.delta));
+    el("td", { "class": "cut", title: c.label }, tr, c.label === "compact" ? "compact (context reset)" : c.label || "–");
+  });
+  if (!calls.length) $("calls-details").hidden = true;
+
+  /* ---------- grabs ---------- */
+  var CONVO = ["Claude's replies", "your messages"];
+  var shownAll = false, ALWAYS = 3;  // the top rows always show; the rest only if they are 1% of the context or more
+  function grabRow(parent, item, cls, maxTokens) {
+    var li = el("li", { "class": "grab " + cls }, parent);
+    el("span", { "class": "g-label", title: item.label }, li, item.label);
+    var bar = el("span", { "class": "g-bar", "aria-hidden": "true" }, li);
+    if (maxTokens) el("i", {}, bar).style.width = Math.max(0.5, item.tokens / maxTokens * 100) + "%";  // no bar for the baseline
+    el("span", { "class": "g-num" }, li, "+" + F.fmtK(item.tokens));
+    el("span", { "class": "g-pct", title: "share of the context now" }, li, ctx ? (item.tokens / ctx < 0.01 ? "<1%" : F.pct(item.tokens / ctx)) : "–");
+    el("span", { "class": "g-count", title: "times it arrived" }, li, item.count > 1 ? "×" + item.count : "");
+  }
+  function drawGrabs() {
+    var talk = $("with-talk").checked;
+    var list = (talk ? D.items : D.tool_items).slice();
+    var max = list.length ? list[0].tokens : 0, ol = $("grabs");
+    ol.textContent = "";
+    if (list.length) {
+      var hd = el("li", { "class": "grab head", "aria-hidden": "true" }, ol);
+      ["", "", "tokens", "share", "seen"].forEach(function (t, i) { el("span", { "class": i > 1 ? "g-num" : "" }, hd, t); });
+    }
+    var shown = list.filter(function (it, k) { return shownAll || k < ALWAYS || !ctx || it.tokens / ctx >= 0.01; });
+    shown.forEach(function (it) { grabRow(ol, it, CONVO.indexOf(it.label) >= 0 ? "talk" : "", max); });
+    var e = $("grabs-empty");
+    e.hidden = list.length > 0;
+    e.textContent = !D.items.length ? "No growth to explain yet. The first call is all baseline."
+      : "Nothing but the conversation itself grew the context. Tick the box above to see it.";
+    var more = $("more");
+    more.hidden = list.length === shown.length && !shownAll;
+    more.textContent = shownAll ? "show fewer" : "show all " + list.length + " (" + (list.length - shown.length) + " hidden, under 1%)";
+    more.setAttribute("aria-expanded", String(shownAll));
+  }
+  $("with-talk").addEventListener("change", drawGrabs);
+  $("more").addEventListener("click", function () { shownAll = !shownAll; drawGrabs(); });
+  drawGrabs();
+  var sumTool = D.tool_items.reduce(function (a, i) { return a + i.tokens; }, 0);
+  var sumTalk = D.items.reduce(function (a, i) { return a + (CONVO.indexOf(i.label) >= 0 ? i.tokens : 0); }, 0);
+  var bl = $("baseline");
+  if (ctx) {
+    $("split").textContent = "In the context now: baseline " + F.pct(D.baseline / ctx) + " · tool results " + F.pct(sumTool / ctx) + " · the conversation " + F.pct(sumTalk / ctx);
+    grabRow(el("ol", { "class": "grabs" }, bl), { label: "baseline", tokens: D.baseline, count: 1 }, "base", 0);
+    el("p", {}, bl, "System prompt, tools, memory — not counted as a grab.");
+  } else bl.hidden = true;
+
+  /* ---------- theme studio ---------- */
+  var S = F.initialState(theme, D.schema), initialJson = JSON.stringify(F.themeOf(S));
+  var fPreset = $("f-preset"), fBar = $("f-bar"), fWidth = $("f-width");
+  Object.keys(D.schema.presets).forEach(function (p) { el("option", { value: p }, fPreset, p); });
+  Object.keys(D.schema.bars).forEach(function (b) { el("option", { value: b }, fBar, b + "  " + D.schema.bars[b]); });
+  fWidth.min = D.schema.bar_width[0]; fWidth.max = D.schema.bar_width[1];
+  var colorIn = {}, colorOut = {};
+  D.schema.roles.forEach(function (r) {
+    var row = el("div", { "class": "crow" }, $("colors"));
+    colorIn[r] = el("input", { type: "color", id: "c-" + r, "aria-label": r + " colour" }, row);
+    var rest = el("div", {}, row);
+    el("label", { "for": "c-" + r }, rest, r);
+    colorOut[r] = el("output", { "for": "c-" + r, style: "margin-left:12px" }, rest);
+    el("span", { "class": "d" }, rest, ROLE_HELP[r]);
+    colorIn[r].addEventListener("input", function () { S.colors[r] = colorIn[r].value.toLowerCase(); sync(); });
+  });
+  fPreset.addEventListener("change", function () { S.preset = fPreset.value; S.colors = Object.assign({}, D.schema.presets[S.preset]); sync(); });
+  fBar.addEventListener("change", function () { S.bar = fBar.value; sync(); });
+  fWidth.addEventListener("input", function () { S.bar_width = parseInt(fWidth.value, 10); sync(); });
+  $("f-emoji").addEventListener("change", function () { S.emoji = this.checked; sync(); });
+  $("f-link").addEventListener("change", function () { S.link = this.checked; sync(); });
+  Array.prototype.forEach.call(document.querySelectorAll("input[name=termbg]"), function (r) {
+    r.addEventListener("change", function () { $("term").setAttribute("data-bg", r.value); });
+  });
+  if (location.hash === "#theme") $("studio").open = true;
+
+  var focusKey = null;
+  function drawSegs() {
+    var ul = $("segs"), n = S.order.length, count = Object.keys(S.shown).filter(function (k) { return S.shown[k]; }).length;
+    ul.textContent = "";
+    S.order.forEach(function (name, i) {
+      var li = el("li", { "class": "sg" + (S.shown[name] ? "" : " off") }, ul);
+      var lab = el("label", { "class": "nm", title: F.SEG_HELP[name] || "" }, li);
+      var cb = el("input", { type: "checkbox" }, lab); cb.checked = !!S.shown[name];
+      cb.disabled = S.shown[name] && count === 1;  // the last visible segment cannot be hidden
+      cb.addEventListener("change", function () { S.shown[name] = cb.checked; focusKey = "cb:" + name; sync(); });
+      el("code", {}, lab, name); el("span", {}, lab, F.SEG_HELP[name] || "");
+      var btns = el("span", { "class": "btns" }, li);
+      var mv = function (dir, text, label) {
+        var b = el("button", { type: "button", "aria-label": label + " " + name, "data-k": dir + name }, btns, text);
+        b.disabled = dir === "u" ? i === 0 : i === n - 1;
+        b.addEventListener("click", function () {
+          var j = dir === "u" ? i - 1 : i + 1, t = S.order[j]; S.order[j] = S.order[i]; S.order[i] = t;
+          focusKey = b.disabled ? null : dir + name; sync();
+        });
+      };
+      mv("u", "↑", "Move up"); mv("d", "↓", "Move down");
+      var br = el("button", { type: "button", "aria-pressed": String(!!S.breaks[name]), "data-k": "b" + name, "aria-label": "Line break after " + name }, btns, "break");
+      br.disabled = i === n - 1;
+      br.addEventListener("click", function () { if (S.breaks[name]) delete S.breaks[name]; else S.breaks[name] = true; focusKey = "b" + name; sync(); });
+      if (S.breaks[name] && i < n - 1) el("li", { "class": "brk", "aria-hidden": "true" }, ul, "↳ new line");
+    });
+    if (focusKey) {
+      var t = focusKey.indexOf("cb:") === 0 ? ul.querySelectorAll("li.sg")[S.order.indexOf(focusKey.slice(3))].querySelector("input")
+        : ul.querySelector('[data-k="' + focusKey.replace(/"/g, "") + '"]');
+      if (t && !t.disabled) t.focus();
+      focusKey = null;
+    }
+  }
+  function drawPreview() {
+    var body = $("term-body"), th = F.themeOf(S);
+    body.textContent = "";
+    [["now · " + (ctx ? F.pct(ctx / win) : "empty"), ctx], ["if it were 65% full", Math.round(win * .65)], ["if it were 85% full", Math.round(win * .85)]].forEach(function (f) {
+      el("div", { "class": "cap" }, body, f[0]);
+      var lines = F.statusLines(th, D, f[1]);
+      if (!lines.length) el("div", { "class": "none" }, body, "(nothing: the status line stays empty until the first reply)");
+      lines.forEach(function (runs) {
+        var ln = el("div", { "class": "ln" }, body);
+        runs.forEach(function (r) {
+          var host = r.link ? el("u", { title: "Cmd+click (or Ctrl+click) opens this page" }, ln) : ln;
+          var s = el("span", {}, host, r.t);
+          if (r.role) s.style.color = F.safeColor(S.colors[r.role], DEFAULTS[r.role]);
+        });
+      });
+    });
+  }
+  function sync() {
+    D.schema.roles.forEach(function (r) { colorIn[r].value = S.colors[r]; colorOut[r].textContent = S.colors[r]; });
+    fPreset.value = S.preset; fBar.value = S.bar; fWidth.value = S.bar_width; $("o-width").textContent = S.bar_width;
+    $("f-emoji").checked = S.emoji; $("f-link").checked = S.link;
+    drawSegs(); drawPreview();
+    $("cmd").textContent = F.command(S);
+    $("edited").hidden = JSON.stringify(F.themeOf(S)) === initialJson;
+    $("copy-status").textContent = "";
+  }
+  var copied;
+  $("copy").addEventListener("click", function () {
+    var text = $("cmd").textContent, st = $("copy-status");
+    var done = function () { st.textContent = "Copied"; $("copy").textContent = "Copied"; clearTimeout(copied); copied = setTimeout(function () { $("copy").textContent = "Copy command"; st.textContent = ""; }, 1800); };
+    var select = function () { var r = document.createRange(); r.selectNodeContents($("cmd")); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); };
+    var fallback = function () {  // file:// pages often have no navigator.clipboard
+      select();
+      var ok = false; try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      if (ok) done(); else st.textContent = "Could not copy. The command is selected: press Ctrl+C (Cmd+C on a Mac).";
+    };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, fallback); else fallback();
+  });
+  $("reset").addEventListener("click", function () { S = F.initialState(theme, D.schema); sync(); $("copy-status").textContent = "Back to your saved theme"; });
+  sync();
+
+  $("app").hidden = false;
+  drawChart();
+}
+if (typeof document !== "undefined") {
+  try { boot(); }
+  catch (e) {
+    var app = document.getElementById("app");
+    app.hidden = false;
+    var box = document.createElement("div");
+    box.className = "err";
+    box.textContent = "This page could not draw itself: " + e.message;
+    app.insertBefore(box, app.firstChild);
+  }
+}
+</script>
+</body>
+</html>

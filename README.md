@@ -7,7 +7,7 @@ message. session-guard:
 
 - **warns you** when a session's context passes 60%, 80% and 90% of the
   model's context window, with the dollar cost so far and the cost of your
-  last message
+  last message, and **what grew the context** (the biggest grabs)
 - **(optional, Jev)** spots when you start a *new task* in a big session and
   stops that prompt once, so you can hand over to a fresh session instead
 - **counts subagents**: their cost is in every number, and a subagent that
@@ -107,6 +107,7 @@ echo ".handover/" >> .git/info/exclude
 | `session-guard jev on` / `off` | Turn the new-task check on (it asks for your key) or off. |
 | `session-guard theme` | Open the picker: choose the status line colours and layout with the arrow keys. See [Customize the status line](#customize-the-status-line). |
 | `session-guard theme show\|list\|use\|set\|reset\|apply` | Print or change the theme with commands, for scripts. |
+| `session-guard view [--session ID] [--no-open]` | Open the page for this session (or another): context chart, biggest grabs, cost and a theme studio. See [The session page](#the-session-page). |
 | `session-guard test` | Run the self-checks. |
 
 Inside Claude Code: `/handover` saves a short note, `/continue` resumes from it.
@@ -123,7 +124,7 @@ session-guard theme
 | Key | What it does |
 |---|---|
 | `↑` `↓` (or `k` `j`) | Move between rows |
-| `←` `→` (or `h` `l`) | Change a value: preset, bar style, bar width, emoji |
+| `←` `→` (or `h` `l`) | Change a value: preset, bar style, bar width, emoji, clickable `ctx` |
 | `Enter` or `Space` | On a colour: open the palette. On a segment: show or hide it. On Save or Cancel: do it. |
 | `s` | Save |
 | `q` or `Esc` | Cancel. Nothing is saved. |
@@ -131,7 +132,8 @@ session-guard theme
 In the palette, move with the arrow keys and press `Enter` to pick. `Esc` goes
 back to the old colour. `#` lets you type your own hex colour. The last visible
 segment cannot be hidden. The picker keeps the order of the segments. To change
-the order, use `theme set segments=...` (below).
+the order, use `theme set segments=...` (below). Under "Show" the picker
+lists every segment (`ctx`, `bar`, `eta`, `cost`, `last`, `jev`, `grab`, `hint`).
 
 Without a terminal (in a script, or piped), `session-guard theme` prints the
 current theme and a hint instead. To print it any time:
@@ -149,6 +151,7 @@ session-guard theme use ocean
 session-guard theme set warn=#ff9900          # one colour (the # is optional)
 session-guard theme set bar=solid bar_width=14
 session-guard theme set emoji=off
+session-guard theme set link=off              # ctx is no longer a link (see The session page)
 session-guard theme reset                     # back to the defaults
 ```
 
@@ -160,6 +163,7 @@ empty bar cells). Other settings:
 | `bar` | `blocks` (▰▱), `solid` (█░) or `dots` (●○) |
 | `bar_width` | 4 to 20 cells, default 10 |
 | `emoji` | `on` or `off` |
+| `link` | `on` (default) or `off`. When on, `ctx` opens [the session page](#the-session-page) in terminals that support links. It does not change the text. |
 | `mode` | `auto`, `truecolor` or `256`. `auto` uses 24-bit colour when `COLORTERM` is `truecolor` or `24bit`, else the nearest of 256 colours. |
 | `segments` | which parts to show, in which order (below) |
 
@@ -179,6 +183,7 @@ status line has no colours at all.
 | `cost` | cost so far, with the subagents' part if it is $0.005 or more |
 | `last` | cost of your last message |
 | `jev` | the new-task check (only when Jev is on) |
+| `grab` | `top: Read report.py +38k`: the biggest thing in the context. Only after the first warning level. See [What grew the context](#what-grew-the-context). |
 | `hint` | `/handover soon` or `/handover now` |
 
 A segment with nothing to show is skipped. To split the status line over two
@@ -198,6 +203,81 @@ session-guard theme apply '{"preset": "ocean", "bar": "dots", "segments": [["ctx
 ```
 
 Every key is optional. If the file is missing or broken, the defaults are used. Segment names it does not know (for example `spark`, which was removed) are skipped.
+
+## The session page
+
+```bash
+session-guard view                 # this folder's newest session, opened in your browser
+session-guard view --session ID    # another session (`session-guard recall id` prints the current one)
+session-guard view --no-open       # only write the file and print its path
+```
+
+It is one HTML file, `~/.claude/session-guard/view/<session id>.html`. The
+design is minimal: one column, flat, no cards, mono type, heavy enough to read
+at a glance. It opens **dark**. A small `dark · light · auto` switch at the top
+right changes that, and the page remembers your choice (`auto` follows your
+system). All text meets WCAG AAA contrast (7:1 or better). It shows:
+
+- **Context now**, how full the window is, the warning levels (60%, 80%, 90%
+  by default) and the cost: so far, subagents, last message.
+- **Context growth:** a chart of the context at each call (the latest 200),
+  with a line at each warning level and a mark where you ran `/compact`.
+  Hover, touch or use the arrow keys to see what grew it at that call.
+  The same numbers are in a table below the chart.
+- **Biggest grabs:** the things that grew the context, biggest first, and the
+  baseline (system prompt, tools, memory) shown apart. Rows under 1% of the
+  context are hidden behind "show all". A tick box adds the conversation
+  itself (replies and your messages). Sizes are estimates; the total is exact.
+- **Theme studio**, folded away until you open "Theme" (or add `#theme` to the
+  address): colour pickers, presets, bar style and width, emoji, the
+  clickable `ctx`, and which segments to show, in which order, on how many
+  lines. A live preview of the status line uses your real numbers at the
+  current fill and at 65% and 85%. **Copy command** gives you a
+  `session-guard theme apply '...'` line. A plain file page cannot write your
+  settings, so you paste that line in a terminal.
+
+**Clickable `ctx`.** With `link` on (the default), the `ctx` part of the status
+line is a link to this page. In a terminal that supports links (Ghostty, iTerm2,
+Kitty, WezTerm) hold Cmd (Ctrl on Linux) and click it. Terminal.app does not
+support them; use `session-guard view` there. The status line writes the page
+only when it is missing or older than the session, which added about 0.05
+seconds to an update on a 21 MB transcript. If anything goes wrong, you get the
+same status line without the link.
+
+**Private and offline.** The page is a local file. It loads nothing from the
+internet and sends nothing. It holds numbers, tool names and file base names
+(`report.py`, not the path). It never holds your prompts, commands, file
+contents or URLs. The file is readable only by you, and `session-guard
+uninstall --purge` deletes it with the rest of the session-guard folder. The page
+is a snapshot: reload the tab after your next message, or run the command again.
+The page is rebuilt when the session, your theme or the page design is newer than
+the file, so an update brings the new design on its next status line refresh.
+
+## What grew the context
+
+A warning also says what made the context grow, so you can change what you do:
+
+```
+💸 Session context is 630k tokens (63% of 1000k; ~$9.40 so far, last message ~$0.14). Biggest grabs (estimates): subagent results ×3 +41k (7%), Read report.py +38k (6%), Bash output ×4 +22k (4%); the conversation itself (replies and your messages) is 61%. Every message re-sends all of it. When you finish this step: /handover, then /clear and /continue.
+```
+
+- **It is an estimate.** The context size is exact. Every split is not: the
+  growth between two calls is shared by the text length of what arrived
+  (Claude's reply without its thinking, tool results, your messages). Read
+  "+38k" as "about 38k".
+- **What you can change comes first.** The list shows tool results (files read,
+  command output, web results, subagent results). Claude's replies and your
+  messages are not listed one by one; they appear as a closing "the
+  conversation itself is N%" when together they are 10% or more.
+- **Private.** It uses only tool names, file base names (`report.py`, not the
+  path) and sizes. Never file contents, commands, prompts or URLs. It is shown
+  on screen only and is not stored: `events.jsonl` still holds numbers only.
+- Items under 3% of the context are left out. Nothing to show? The warning is
+  the same as before. A drop in context (`/compact`) starts the count again.
+- Subagent warnings list their top two, from the subagent's own transcript.
+- The `grab` status line segment shows the single biggest tool-related item. It reads the
+  transcript once more per update, which added about 0.03 to 0.07 seconds on a
+  7 to 21 MB transcript.
 
 ## Configure
 
