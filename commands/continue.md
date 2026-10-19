@@ -5,14 +5,14 @@ allowed-tools: Bash(git branch:*), Bash(git status:*), Bash(cat:*), Bash(python3
 Handover note:
 !`cat .handover/HANDOVER.md 2>/dev/null || echo "NO HANDOVER FILE FOUND"`
 
-Current git state:
-- Branch: !`git branch --show-current`
-- Status: !`git status --short`
+Git repos in this folder now (path relative to the working folder):
+!`python3 ~/.claude/session-guard/recall.py git`
 
 If there is no handover file, say so and stop.
 
-If the branch differs from the note, or the changed files look very
-different, warn me before doing anything.
+Compare each repo in the note's "Repos" section with the list above. If a
+repo's branch differs, a repo is missing or new, or the changed files look
+very different, warn me before doing anything.
 
 Do NOT explore the codebase. Only open files the note mentions, and only
 when you need them.
