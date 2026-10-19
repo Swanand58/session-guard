@@ -7,7 +7,7 @@ message. session-guard:
 
 - **warns you** when a session's context passes 60%, 80% and 90% of the
   model's context window, with the dollar cost so far and the cost of your
-  last message
+  last message, and **what grew the context** (the biggest grabs)
 - **(optional, Jev)** spots when you start a *new task* in a big session and
   stops that prompt once, so you can hand over to a fresh session instead
 - **counts subagents**: their cost is in every number, and a subagent that
@@ -131,7 +131,8 @@ session-guard theme
 In the palette, move with the arrow keys and press `Enter` to pick. `Esc` goes
 back to the old colour. `#` lets you type your own hex colour. The last visible
 segment cannot be hidden. The picker keeps the order of the segments. To change
-the order, use `theme set segments=...` (below).
+the order, use `theme set segments=...` (below). Under "Show" the picker
+lists every segment (`ctx`, `bar`, `eta`, `cost`, `last`, `jev`, `grab`, `hint`).
 
 Without a terminal (in a script, or piped), `session-guard theme` prints the
 current theme and a hint instead. To print it any time:
@@ -179,6 +180,7 @@ status line has no colours at all.
 | `cost` | cost so far, with the subagents' part if it is $0.005 or more |
 | `last` | cost of your last message |
 | `jev` | the new-task check (only when Jev is on) |
+| `grab` | `top: Read report.py +38k`: the biggest thing in the context. Only after the first warning level. See [What grew the context](#what-grew-the-context). |
 | `hint` | `/handover soon` or `/handover now` |
 
 A segment with nothing to show is skipped. To split the status line over two
@@ -198,6 +200,32 @@ session-guard theme apply '{"preset": "ocean", "bar": "dots", "segments": [["ctx
 ```
 
 Every key is optional. If the file is missing or broken, the defaults are used. Segment names it does not know (for example `spark`, which was removed) are skipped.
+
+## What grew the context
+
+A warning also says what made the context grow, so you can change what you do:
+
+```
+💸 Session context is 630k tokens (63% of 1000k; ~$9.40 so far, last message ~$0.14). Biggest grabs (estimates): subagent results ×3 +41k (7%), Read report.py +38k (6%), Bash output ×4 +22k (4%); the conversation itself (replies and your messages) is 61%. Every message re-sends all of it. When you finish this step: /handover, then /clear and /continue.
+```
+
+- **It is an estimate.** The context size is exact. Every split is not: the
+  growth between two calls is shared by the text length of what arrived
+  (Claude's reply without its thinking, tool results, your messages). Read
+  "+38k" as "about 38k".
+- **What you can change comes first.** The list shows tool results (files read,
+  command output, web results, subagent results). Claude's replies and your
+  messages are not listed one by one; they appear as a closing "the
+  conversation itself is N%" when together they are 10% or more.
+- **Private.** It uses only tool names, file base names (`report.py`, not the
+  path) and sizes. Never file contents, commands, prompts or URLs. It is shown
+  on screen only and is not stored: `events.jsonl` still holds numbers only.
+- Items under 3% of the context are left out. Nothing to show? The warning is
+  the same as before. A drop in context (`/compact`) starts the count again.
+- Subagent warnings list their top two, from the subagent's own transcript.
+- The `grab` status line segment shows the single biggest tool-related item. It reads the
+  transcript once more per update, which added about 0.03 to 0.07 seconds on a
+  7 to 21 MB transcript.
 
 ## Configure
 

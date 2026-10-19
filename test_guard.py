@@ -457,7 +457,7 @@ assert not (home / ".claude" / "commands" / "handover.md").exists()
 assert not (home / ".claude" / "session-guard" / "recall.py").is_symlink()
 home = Path(tempfile.mkdtemp())  # fresh Mac: no ~/.claude yet
 out = run()
-assert "session-guard jev on" in out, out
+assert "New-task check (Jev): session-guard jev on / off" in out and "is OFF" not in out, out
 assert json.loads((home / ".claude" / "settings.json").read_text())["statusLine"]["command"].endswith("statusline.py")
 assert "export PATH" in out, out  # ~/.local/bin is not on PATH in this test
 run("uninstall")
@@ -698,8 +698,8 @@ if os.name == "posix":
     assert out.index("\x1b[?1049h") < out.index("\x1b[?1049l") < out.index("Saved. Your status line updates on the next message.")
     assert "\x1b[?25l" in out and out.rindex("\x1b[?25h") > out.index("\x1b[?25l") and "38;2;" in out and "› Preset" in plain(out), out[-300:]
     assert [f.name for f in pk_file.parent.iterdir()] == ["theme.json"]
-    # Second visit starts from the saved theme. Eight downs in one write reach "ctx"; Enter hides it; seven more reach [ Save ].
-    out, code = drive([b"\x1b[B" * 8, b"\r", b"\x1b[B" * 7, b"\r"], pk_home)
+    # Second visit starts from the saved theme. Eight downs in one write reach "ctx"; Enter hides it; eight more reach [ Save ].
+    out, code = drive([b"\x1b[B" * 8, b"\r", b"\x1b[B" * 8, b"\r"], pk_home)
     assert code == 0 and json.loads(pk_file.read_text()) == {"preset": "ocean", "segments": [list(ui.SEGMENTS[1:])]}, (code, out[-300:])
     # q, a lone Esc and Ctrl-C cancel without writing anything.
     for key in (b"q", b"\x1b", b"\x03"):
@@ -713,5 +713,175 @@ r = subprocess.run([sys.executable, "cli.py", "theme"], input="", capture_output
 assert r.returncode == 0 and "Preset" not in r.stdout and "preset    default" in r.stdout, r
 assert "The picker needs a terminal. Use: session-guard theme use <preset> / theme set key=value." in r.stdout
 assert th_cli("show").returncode == 0 and "preset    default" in th_cli("show").stdout
+
+# Grabs: what made the context grow. Synthetic transcripts; the context is exact, every split is an estimate (by text length).
+# A Read tool_use input is 17 + len(path) chars of JSON; text blocks and results are counted by length; thinking is not counted.
+import grabs  # noqa: E402
+
+def acall(msg_id, ctx, out=0, *blocks, **extra):
+    return {"type": "assistant", "message": {"id": msg_id, "model": "claude-sonnet-5", "content": list(blocks), "usage": {
+        "input_tokens": 0, "cache_read_input_tokens": ctx, "cache_creation_input_tokens": 0, "output_tokens": out}}, **extra}
+use = lambda tid, name, **inp: {"type": "tool_use", "id": tid, "name": name, "input": inp}
+result = lambda tid, text: {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content": text}]}}
+item = lambda g, label: next((i for i in g["items"] if i["label"] == label), None)
+def whole(g):  # baseline + the items always add up to the context
+    assert g["baseline"] + sum(i["tokens"] for i in g["items"]) == g["context"], g
+    assert [i["tokens"] for i in g["items"]] == sorted((i["tokens"] for i in g["items"]), reverse=True), g
+    return g
+
+# One gap: delta 10k is shared by visible length: 3000 chars of Claude's reply (text 2985 + a 15-char Bash tool input) and a 7000-char
+# result give 3,000 / 7,000 tokens. Thinking and usage.output_tokens are ignored. Prompt text, command text and contents never reach a label.
+g = whole(grabs.grabs(transcript([
+    prompt("SECRET_PROMPT please"), acall("m1", 10_000, 90_000, {"type": "thinking", "thinking": "t" * 9000}, {"type": "text", "text": "r" * 2985},
+                                          use("r1", "Bash", command="")),
+    result("r1", "SECRET_CONTENT " * 466 + "x" * 10), acall("m2", 20_000)])))
+assert g["context"] == 20_000 and g["baseline"] == 10_000, g
+assert g["items"] == [{"label": "Bash output", "tokens": 7_000, "count": 1}, {"label": "Claude's replies", "tokens": 3_000, "count": 1}], g
+assert g["calls"] == [{"context": 10_000, "delta": 0, "label": ""}, {"context": 20_000, "delta": 10_000, "label": "Bash output"}], g
+# Two results in one gap, and a response split over two lines (same id; its lengths add up: 961 + 24 + 15 = 1000): 1000 : 3000 : 1000.
+g = whole(grabs.grabs(transcript([
+    acall("m1", 10_000, 1_000, {"type": "text", "text": "r" * 961}, use("a", "Read", file_path="/p/a.py")), acall("m1", 10_000, 1_000, use("b", "Bash", command="")),
+    result("a", "x" * 3000), result("b", "y" * 1000), acall("m2", 20_000)])))
+assert [(i["label"], i["tokens"]) for i in g["items"]] == [("Read a.py", 6000), ("Bash output", 2000), ("Claude's replies", 2000)], g
+assert len(g["calls"]) == 2 and g["baseline"] == 10_000
+# Nothing visible arrived: the growth is attributed to nothing and stays in baseline.
+g = whole(grabs.grabs(transcript([acall("m1", 10_000), result("a", ""), acall("m2", 20_000)])))
+assert g["items"] == [] and g["baseline"] == 20_000, g
+# The same label across gaps is one item with a count; a non-text block weighs 6000 chars; unknown tool_use_id still counts.
+g = whole(grabs.grabs(transcript([
+    acall("m1", 10_000, 0, use("a", "Read", file_path="/p/a.py")), result("a", "x" * 100), acall("m2", 11_000, 0, use("b", "Read", file_path="/q/a.py")),
+    result("b", "x" * 100), acall("m3", 13_000, 0, use("c", "Read", file_path="/p/a.py")),
+    {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "c", "content": [{"type": "image"}]},
+                                              {"type": "tool_result", "tool_use_id": "nope", "content": "z" * 6000}]}}, acall("m4", 15_000)])))
+assert item(g, "Read a.py")["count"] == 3 and item(g, "Read a.py")["tokens"] > 1000 and item(g, "tool output")["count"] == 1, g
+# Gap 3 -> 4 by hand: 2000 tokens over 24 (reply) + 6000 (image) + 6000 (unknown id) chars.
+assert item(g, "tool output")["tokens"] == round(2000 * 6000 / 12024), g
+# Labels: tool names, file base names and fixed phrases only.
+lab = grabs.label_for
+assert [lab("Edit", {"file_path": "/a/b/c.txt"}), lab("NotebookEdit", {"notebook_path": "C:\\w\\n.ipynb"}), lab("Write", {}), lab("Agent", {}), lab("Task", {}),
+        lab("Bash", {"command": "SECRET_CMD"}), lab("Grep", {"pattern": "SECRET"}), lab("Glob", {}), lab("WebFetch", {"url": "https://secret.example/x"}),
+        lab("WebSearch", {"query": "SECRET"}), lab("mcp__db__query", {"sql": "SECRET"}), lab(None, None)] == [
+    "Edit c.txt", "NotebookEdit n.ipynb", "Write", "subagent results", "subagent results", "Bash output", "Grep results", "Glob results",
+    "web results", "web results", "mcp__db__query output", "tool output"]
+# Your messages count after the first call. Nothing secret in the data, in describe, or in a warning.
+tp_ = transcript([
+    prompt("first"), acall("m1", 100_000, 0, use("r1", "Bash", command="echo SECRET_CMD https://secret.example")), result("r1", "SECRET_OUT " * 500),
+    prompt("SECRET_PROMPT " * 1000), acall("m2", 130_000)])
+g = whole(grabs.grabs(tp_))
+assert {i["label"] for i in g["items"]} == {"Bash output", "your messages", "Claude's replies"}, g
+assert item(g, "your messages")["tokens"] > item(g, "Bash output")["tokens"] > 0
+everything = json.dumps(g) + grabs.describe(g) + guard.grab_note({"transcript": tp_})
+assert "SECRET" not in everything and "echo" not in everything and "https" not in everything, everything
+# Subagent lines: skipped by default, used with sidechain=True (a subagent file is all sidechain lines).
+side = lambda row: {**row, "isSidechain": True}
+mixed = transcript([acall("m1", 10_000, 0, use("a", "Read", file_path="/p/main.py")), result("a", "x" * 100),
+                    side(acall("s1", 90_000, 0, use("s", "Grep", pattern="q"))), side(result("s", "y" * 100)), side(acall("s2", 95_000)),
+                    acall("m2", 12_000)])
+g = grabs.grabs(mixed)
+assert g["context"] == 12_000 and {i["label"] for i in g["items"]} == {"Read main.py", "Claude's replies"}, g
+agent_file = transcript([side(prompt("task for the subagent")), side(acall("s1", 90_000, 0, use("s", "Grep", pattern="q"))),
+                         side(result("s", "y" * 100)), side(acall("s2", 95_000))])
+g = whole(grabs.grabs(agent_file, sidechain=True))
+assert g["context"] == 95_000 and g["baseline"] == 90_000 and g["items"] == [  # 5000 over 100 chars of result and a 16-char tool input
+    {"label": "Grep results", "tokens": 4310, "count": 1}, {"label": "Claude's replies", "tokens": 690, "count": 1}], g
+assert grabs.grabs(agent_file)["context"] == 0  # without the flag a subagent file is empty
+# /compact (context falls): everything before is forgotten, the new size is all baseline.
+g = whole(grabs.grabs(transcript([
+    acall("m1", 10_000, 0, use("a", "Read", file_path="/p/old.py")), result("a", "x" * 100), acall("m2", 60_000),
+    acall("m3", 20_000, 0, use("b", "Read", file_path="/p/new.py")), result("b", "x" * 100), acall("m4", 30_000),
+    acall("m5", 0)])))  # a zero-usage placeholder line is not a call
+assert g["baseline"] == 20_000 and g["items"] == [  # 10k over 100 chars of result and a 26-char tool input
+    {"label": "Read new.py", "tokens": 7937, "count": 1}, {"label": "Claude's replies", "tokens": 2063, "count": 1}], g
+assert [c["delta"] for c in g["calls"]] == [0, 50_000, -40_000, 10_000] and g["calls"][2]["label"] == "compact", g["calls"]
+# A small drop (a model switch counts the same text differently) is not a reset: items are kept and scaled by f. Below half is a reset.
+drop = lambda last: whole(grabs.grabs(transcript([
+    acall("m1", 10_000, 1_000, use("a", "Read", file_path="/p/a.py")), result("a", "x" * 100), acall("m2", 50_000), acall("m3", last), result("zz", "x" * 99)])))
+g = drop(45_000)  # f = 0.9
+assert g["baseline"] + sum(i["tokens"] for i in g["items"]) == 45_000 and g["baseline"] == 9_000, g
+assert g["items"] == [{"label": "Read a.py", "tokens": 29_032, "count": 1}, {"label": "Claude's replies", "tokens": 6_968, "count": 1}], g
+assert [c["delta"] for c in g["calls"]] == [0, 40_000, -5_000] and g["calls"][2]["label"] == "", g["calls"]
+g = drop(25_000)  # exactly f = 0.5: still not a reset
+assert g["baseline"] == 5_000 and g["items"][0] == {"label": "Read a.py", "tokens": 16_129, "count": 1}, g
+g = drop(24_999)  # just under: reset
+assert g["items"] == [] and g["baseline"] == 24_999 and g["calls"][2]["label"] == "compact", g
+# calls keeps the last 60; the shape is ints and short strings.
+g = grabs.grabs(transcript([acall(f"c{i}", 1000 * (i + 1)) for i in range(70)]))
+assert len(g["calls"]) == 60 and g["calls"][0]["context"] == 11_000 and g["calls"][-1] == {"context": 70_000, "delta": 1000, "label": ""}, g["calls"][-1]
+assert all(set(c) == {"context", "delta", "label"} and isinstance(c["context"], int) for c in g["calls"])
+# describe: +Nk, ×count only above 1, share of the context, top n, 3% threshold, empty cases.
+big = {"context": 100_000, "items": [{"label": "Read report.py", "tokens": 38_000, "count": 1}, {"label": "Bash output", "tokens": 22_000, "count": 4},
+                                     {"label": "web results", "tokens": 5_000, "count": 2}, {"label": "Glob results", "tokens": 4_000, "count": 1}]}
+assert grabs.describe(big) == "Read report.py +38k (38%), Bash output ×4 +22k (22%), web results ×2 +5k (5%)"
+assert grabs.describe(big, 1) == "Read report.py +38k (38%)" and grabs.describe({**big, "context": 150_000}, 4).endswith("web results ×2 +5k (3%)")
+assert "Glob" not in grabs.describe({**big, "context": 150_000}, 4)  # 4k of 150k is under 3%
+assert grabs.describe({**big, "context": 2_000_000}) == "" and grabs.describe({"context": 0, "items": big["items"]}) == "" and grabs.describe({}) == ""
+# describe leads with what the user can change; the conversation (replies and your messages) is a tail, only from 10% of the context.
+talk = {"context": 100_000, "items": [{"label": "Claude's replies", "tokens": 50_000, "count": 30}, {"label": "your messages", "tokens": 20_000, "count": 5},
+                                      {"label": "Read report.py", "tokens": 12_000, "count": 1}, {"label": "Bash output", "tokens": 2_000, "count": 3}]}
+assert grabs.describe(talk) == "Read report.py +12k (12%); the conversation itself (replies and your messages) is 70%"
+assert [i["label"] for i in grabs.tool_items(talk)] == ["Read report.py", "Bash output"] and len(talk["items"]) == 4  # the full list is untouched
+assert grabs.describe({**talk, "items": talk["items"][:2]}) == "the conversation itself (replies and your messages) is 70%"
+assert grabs.describe({**talk, "items": [{**talk["items"][0], "tokens": 6_000}, {**talk["items"][1], "tokens": 3_000}, *talk["items"][2:]]}) == "Read report.py +12k (12%)"
+assert grabs.describe({**talk, "items": [{**talk["items"][0], "tokens": 9_999}, *talk["items"][2:]]}) == "Read report.py +12k (12%)"  # 9.999% < 10%
+assert grabs.describe({"context": 100_000, "items": talk["items"][:2]}, 1).endswith("is 70%") and grabs.describe({"context": 0, "items": talk["items"]}) == ""
+# Odd input never raises: missing file, a folder, junk lines, odd shapes.
+empty = {"context": 0, "baseline": 0, "items": [], "calls": []}
+assert grabs.grabs(Path("/no/such/file.jsonl")) == empty and grabs.grabs(Path(tempfile.mkdtemp())) == empty
+junk = transcript([]); junk.write_text('not json\n5\n[]\nnull\n{"type": "assistant", "message": "x"}\n{"type": "user", "message": {"content": 7}}\n'
+                                       + json.dumps(acall("ok", 5000)) + '\n{"type": "assistant", "message": {"usage": {"output_tokens": "x"}}}\n')
+assert grabs.grabs(junk)["context"] == 5000 and guard.grab_note({}) == "" and guard.grab_note({"transcript": Path("/no/such")}) == ""
+
+# The warning says what grew the context, only when a level is crossed, and is the old message if grabs fails.
+grow = transcript([prompt("go"), acall("m1", 100_000, 0, use("r", "Read", file_path="/x/report.py")), result("r", "x" * 4000), acall("m2", 130_000)])
+sg = {**sess(130_000), "transcript": grow}
+old = "💸 Session context is 130k tokens (65% of 200k; ~$1.00 so far, last message ~$0.10). Every message re-sends all of it. When you finish this step: /handover, then /clear and /continue."
+msg = guard.decide({}, sg, {})["systemMessage"]
+assert msg == old.replace("Every message", "Biggest grabs (estimates): Read report.py +30k (23%). Every message"), msg
+assert guard.decide({}, {**sg, "context": 100_000}, {}) is None and guard.decide({}, sess(130_000), {})["systemMessage"] == old  # no transcript: unchanged
+real_grabs = grabs.grabs
+def boom(*a, **k):
+    raise RuntimeError("grabs broke")
+grabs.grabs = boom
+try:
+    assert guard.decide({}, sg, {})["systemMessage"] == old
+finally:
+    grabs.grabs = real_grabs
+calls_seen = []
+grabs.grabs = lambda *a, **k: calls_seen.append(1) or real_grabs(*a, **k)
+try:
+    guard.decide({}, {**sg, "context": 100_000}, {})
+    assert not calls_seen  # computed only when a warning fires
+finally:
+    grabs.grabs = real_grabs
+# A subagent's warning: short, from its own transcript.
+am = guard.decide_agent({"context": 160_000, "total": 0.5, "transcript": agent_file}, {})["systemMessage"]
+assert "Biggest grabs (estimates): Grep results +4k (5%). Every further step" in am, am
+agent_big = transcript([side(acall("s1", 100_000, 0, use("s", "Bash", command="x"))), side(result("s", "y" * 100)), side(acall("s2", 160_000))])
+am = guard.decide_agent({"context": 160_000, "total": 0.5, "transcript": agent_big}, {})["systemMessage"]
+assert "Biggest grabs (estimates): Bash output +52k (32%). Every further step" in am, am
+# End to end through the real hooks (temporary HOME): the warning and the status line, with no secret in either.
+e2e_home = Path(tempfile.mkdtemp())
+e2e = lambda script, **payload: subprocess.run([sys.executable, script], input=json.dumps({"session_id": "g", "transcript_path": str(grow), **payload}),
+                                               capture_output=True, text=True, env={**os.environ, "HOME": str(e2e_home), "NO_COLOR": "1"}).stdout
+out = e2e("guard.py", hook_event_name="UserPromptSubmit", prompt="hi")
+assert "Biggest grabs (estimates): Read report.py +30k (23%)." in json.loads(out)["systemMessage"], out
+assert "top: Read report.py +30k" in e2e("statusline.py")
+assert "report.py" not in (e2e_home / ".claude" / "session-guard" / "events.jsonl").read_text()  # numbers only in the log
+# Status line "grab" segment: dim, only once a level is reached, only if the segment is shown, never breaks the line.
+past = lambda ctx, **kw: rd({**sess(ctx), "transcript": grow, **kw}, {})
+assert "top: Read report.py +30k" in plain(past(130_000)) and paint("top: Read report.py +30k", "dim") in past(130_000)
+assert "top:" not in past(100_000) and "top:" not in plain(rd({**sess(130_000), "transcript": Path("/no/such")}, {})) and "ctx" in rd({**sess(130_000), "transcript": 5}, {})
+assert plain(past(130_000)).index("top: ") < plain(past(130_000)).index("/handover soon") and "grab" in ui.SEGMENTS and ui.SEGMENTS.index("grab") == ui.SEGMENTS.index("hint") - 1
+assert "grab" in tp.HELP and "top: Read report.py" in plain(tp.render(tp.initial_state({}), 200)) and "[x] grab" in plain(tp.render(tp.initial_state({}), 100))
+talky = transcript([prompt("a"), acall("m1", 100_000), prompt("SECRET " * 5000), acall("m2", 130_000)])  # growth is only your message
+assert "top:" not in plain(rd({**sess(130_000), "transcript": talky}, {})) and "your messages" in grabs.grabs(talky)["items"][0]["label"]
+assert guard.decide({}, {**sess(130_000), "transcript": talky}, {})["systemMessage"].count("the conversation itself (replies and your messages) is 23%") == 1
+grabs.grabs = boom
+try:
+    assert plain(past(130_000)).count("top:") == 0
+    assert "top: shown" in plain(past(130_000, grab="top: shown"))
+    assert plain(rd({**sess(130_000), "transcript": grow}, {}, only("ctx"))) == "💸 130k ctx"  # not even tried when the segment is hidden
+finally:
+    grabs.grabs = real_grabs
 
 print("all good")

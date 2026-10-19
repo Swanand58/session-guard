@@ -27,7 +27,7 @@ PRESETS = {  # name -> hex colour per role
 }
 BARS = {"blocks": "▰▱", "solid": "█░", "dots": "●○"}  # filled, empty
 MODES = ("auto", "truecolor", "256")
-SEGMENTS = ("ctx", "bar", "eta", "cost", "last", "jev", "hint")
+SEGMENTS = ("ctx", "bar", "eta", "cost", "last", "jev", "grab", "hint")
 DEFAULT_SEGMENTS = [list(SEGMENTS)]  # one line
 
 

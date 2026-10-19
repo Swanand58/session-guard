@@ -36,6 +36,18 @@ def eta(session: dict, ctx: int, lvls: list) -> str:
     return f"~{n if n <= 99 else '99+'} {'msg' if n == 1 else 'msgs'} to {nxt[0] // 1000}k"
 
 
+def top_grab(session: dict) -> str:
+    """Text like 'top: Read report.py +38k': the biggest thing in the context. Empty if unknown."""
+    if "grab" in session:  # given (the theme picker's fake sessions)
+        return session["grab"]
+    try:
+        import grabs  # here, so a missing file only hides this segment
+        top = grabs.tool_items(grabs.grabs(session["transcript"]))[0]
+        return f"top: {top['label']} +{top['tokens'] / 1000:.0f}k"
+    except Exception:
+        return ""
+
+
 def render(session: dict, state: dict, theme: dict | None = None) -> str:
     ctx = session["context"]
     if not ctx:
@@ -60,6 +72,7 @@ def render(session: dict, state: dict, theme: dict | None = None) -> str:
         "cost": f"${session['total']:.2f}" + (f" (agents ${session['agents']:.2f})" if session.get("agents", 0) >= 0.005 else ""),
         "last": f"last msg ${session['last_msg']:.2f}",
         "jev": "",
+        "grab": paint(top_grab(session), "dim") if reached and any("grab" in names for names in theme["segments"]) else "",
         "hint": paint("/handover soon", "warn") if reached == 1 else paint("/handover now", "danger") if reached > 1 else "",
     }
     jev = state.get("jev")
@@ -103,7 +116,7 @@ def main() -> None:
                 state_file.write_text(json.dumps(state))
             except OSError:
                 pass  # still draw the line
-        line = render(guard.read_session(transcript), state)
+        line = render({**guard.read_session(transcript), "transcript": transcript}, state)
         if line:
             print(line)
     except Exception:

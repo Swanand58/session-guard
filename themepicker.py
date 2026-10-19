@@ -34,7 +34,7 @@ import ui
 
 # Fake sessions on a 1M window, for previews: about 14%, 65% and 85% full.
 PREVIEWS = [
-    ({"context": ctx, "total": total, "last_msg": 0.14, "agents": agents, "prompts": ["x"], "peak": ctx,
+    ({"context": ctx, "total": total, "last_msg": 0.14, "agents": agents, "prompts": ["x"], "peak": ctx, "grab": "top: Read report.py +38k",
       "prompt_ctx": [ctx - 3 * step, ctx - 2 * step, ctx - step, ctx]},
      {"window": 1_000_000, "jev": jev})
     for ctx, step, total, agents, jev in ((140_000, 25_000, 2.61, 0.34, 0.1), (650_000, 30_000, 9.40, 0, 0.5), (850_000, 40_000, 17.20, 1.1, 0.93))
@@ -42,7 +42,8 @@ PREVIEWS = [
 ROWS = (["preset"] + [f"color:{r}" for r in ui.ROLES] + ["bar", "bar_width", "emoji"]
         + [f"seg:{s}" for s in ui.SEGMENTS] + ["save", "cancel"])
 HELP = {"ctx": "context size", "bar": "how full the window is", "eta": "messages left to the next level",
-        "cost": "cost so far", "last": "cost of your last message", "jev": "new-task check", "hint": "/handover hint"}
+        "cost": "cost so far", "last": "cost of your last message", "jev": "new-task check",
+        "grab": "what grew the context most", "hint": "/handover hint"}
 # Every preset colour, then a few more.
 SWATCHES = list(dict.fromkeys([c for p in ui.PRESETS.values() for c in p.values()]
                               + ["#ff9900", "#a78bfa", "#f87171", "#22d3ee"]))
