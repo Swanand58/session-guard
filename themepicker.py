@@ -39,7 +39,7 @@ PREVIEWS = [
      {"window": 1_000_000, "jev": jev})
     for ctx, step, total, agents, jev in ((140_000, 25_000, 2.61, 0.34, 0.1), (650_000, 30_000, 9.40, 0, 0.5), (850_000, 40_000, 17.20, 1.1, 0.93))
 ]
-ROWS = (["preset"] + [f"color:{r}" for r in ui.ROLES] + ["bar", "bar_width", "emoji"]
+ROWS = (["preset"] + [f"color:{r}" for r in ui.ROLES] + ["bar", "bar_width", "emoji", "link"]
         + [f"seg:{s}" for s in ui.SEGMENTS] + ["save", "cancel"])
 HELP = {"ctx": "context size", "bar": "how full the window is", "eta": "messages left to the next level",
         "cost": "cost so far", "last": "cost of your last message", "jev": "new-task check",
@@ -87,7 +87,7 @@ def to_theme(state: dict) -> dict:
     colors = {r: c for r, c in state["colors"].items() if c != ui.PRESETS[state["preset"]][r]}
     if colors:
         out["colors"] = colors
-    out.update({k: state[k] for k in ("bar", "bar_width", "emoji", "mode", "segments") if state[k] != base[k]})
+    out.update({k: state[k] for k in ("bar", "bar_width", "emoji", "link", "mode", "segments") if state[k] != base[k]})
     return out
 
 
@@ -135,9 +135,9 @@ def handle_key(state: dict, key: str) -> tuple:
         elif row == "bar":
             s["bar"] = _cycle(s["bar"], ui.BARS, step)
         elif row == "bar_width":
-            s["bar_width"] = min(20, max(4, s["bar_width"] + step))
-        elif row == "emoji":
-            s["emoji"] = not s["emoji"]
+            s["bar_width"] = min(ui.BAR_WIDTH[1], max(ui.BAR_WIDTH[0], s["bar_width"] + step))
+        elif row in ("emoji", "link"):
+            s[row] = not s[row]
         elif pick and row.startswith("color:"):
             role = row[6:]
             old = s["colors"][role]
@@ -201,8 +201,8 @@ def _row(state: dict, name: str) -> tuple:
     if name == "save" or name == "cancel":
         return f"[ {name.capitalize()} ]", ""
     value = {"preset": state["preset"], "bar": state["bar"], "bar_width": state["bar_width"],
-             "emoji": "on" if state["emoji"] else "off"}[name]
-    return {"preset": "Preset", "bar": "Bar style", "bar_width": "Bar width", "emoji": "Emoji"}[name], f"‹ {value} ›"
+             "emoji": "on" if state["emoji"] else "off", "link": "on" if state["link"] else "off"}[name]
+    return {"preset": "Preset", "bar": "Bar style", "bar_width": "Bar width", "emoji": "Emoji", "link": "Clickable ctx"}[name], f"‹ {value} ›"
 
 
 def render(state: dict, columns: int) -> str:
@@ -228,7 +228,7 @@ def render(state: dict, columns: int) -> str:
         if name == "seg:" + ui.SEGMENTS[0]:
             lines.append("  Show")
         label, value = _row(state, name)
-        label = label.ljust(12) if value else label
+        label = label.ljust(16) if value else label
         lines.append("› " + _bold(label) + value if i == state["row"] else "  " + label + value)
     lines += ["", "  " + dim("↑↓ move  ←→ change  Enter/Space pick  s save  q cancel")]
     return "\n".join(lines)

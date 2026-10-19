@@ -175,7 +175,7 @@ os.environ.pop("NO_COLOR", None)
 os.environ["COLORTERM"] = "truecolor"
 T = ui.effective({})
 rd = lambda session, state, theme=T: statusline.render(session, state, theme)
-plain = lambda text: re.sub(r"\033\[[0-9;]*m", "", text)
+plain = lambda text: re.sub(r"\033\[[0-9;]*m|\033\]8;;[^\a]*\a", "", text)  # colour codes and OSC 8 links
 
 assert rd(sess(0), {}) == ""  # nothing before the first reply
 line = rd(sess(150_000), {"jev": 0.1})
@@ -540,7 +540,7 @@ sl_run = lambda **env: subprocess.run([sys.executable, "statusline.py"], capture
 out = sl_run(COLORTERM="truecolor")
 assert out.count("\n") == 2 and "38;2;" in out and "$" in out.split("\n")[1], repr(out)
 assert "38;5;" in sl_run() and "38;2;" not in sl_run()
-assert "\033" not in sl_run(NO_COLOR="1") and "50k ctx" in sl_run(NO_COLOR="1")
+assert "\033[" not in sl_run(NO_COLOR="1") and "50k ctx" in sl_run(NO_COLOR="1")  # the link is not a colour: it stays
 th_file.write_text("{{{")
 assert "50k ctx" in sl_run() and sl_run().count("\n") == 1
 assert th_cli("reset").returncode == 0 and not th_file.exists() and th_cli("reset").returncode == 0
@@ -613,7 +613,7 @@ assert press(goto(st, "save"), "enter")[1] == "save" and press(goto(st, "cancel"
 assert tp.parse_keys(b"\x1b[A\x1bOB\x1b[C\x1b[Dq \r\x7f\x03\x1b[3~x\x1b") == ["up", "down", "right", "left", "q", " ", "enter", "backspace", "ctrl-c", "x", "esc"]
 # Screens.
 screen = plain(tp.render(st, 100))
-assert screen.split("\n")[0] == "session-guard theme" and "› Preset      ‹ default ›" in screen and screen.count("› ") == 1, screen
+assert screen.split("\n")[0] == "session-guard theme" and "› Preset          ‹ default ›" in screen and screen.count("› ") == 1, screen
 assert "██ #87af87" in screen and "██ #8a8a8a" in screen and "[x] spark" not in screen and "[x] hint" in screen and "[ Cancel ]" in screen
 assert screen.count("ctx") >= 3 and "14%" in screen and "85%" in screen and "q cancel" in screen
 assert "38;2;135;175;135m" in tp.render(st, 100) and "› Bar style" in plain(tp.render(goto(st, "bar"), 100))
@@ -698,8 +698,8 @@ if os.name == "posix":
     assert out.index("\x1b[?1049h") < out.index("\x1b[?1049l") < out.index("Saved. Your status line updates on the next message.")
     assert "\x1b[?25l" in out and out.rindex("\x1b[?25h") > out.index("\x1b[?25l") and "38;2;" in out and "› Preset" in plain(out), out[-300:]
     assert [f.name for f in pk_file.parent.iterdir()] == ["theme.json"]
-    # Second visit starts from the saved theme. Eight downs in one write reach "ctx"; Enter hides it; eight more reach [ Save ].
-    out, code = drive([b"\x1b[B" * 8, b"\r", b"\x1b[B" * 8, b"\r"], pk_home)
+    # Second visit starts from the saved theme. Nine downs in one write reach "ctx"; Enter hides it; eight more reach [ Save ].
+    out, code = drive([b"\x1b[B" * 9, b"\r", b"\x1b[B" * 8, b"\r"], pk_home)
     assert code == 0 and json.loads(pk_file.read_text()) == {"preset": "ocean", "segments": [list(ui.SEGMENTS[1:])]}, (code, out[-300:])
     # q, a lone Esc and Ctrl-C cancel without writing anything.
     for key in (b"q", b"\x1b", b"\x03"):
@@ -883,5 +883,270 @@ try:
     assert plain(rd({**sess(130_000), "transcript": grow}, {}, only("ctx"))) == "💸 130k ctx"  # not even tried when the segment is hidden
 finally:
     grabs.grabs = real_grabs
+
+# Theme key `link`: valid values, the default, the file, `theme set`, the picker row.
+assert ui.validate({"link": False}) == ({"link": False}, None) and "on or off" in ui.validate({"link": "yes"})[1]
+assert ui.effective({})["link"] is True and ui.effective({"link": False})["link"] is False and ui.BAR_WIDTH == (4, 20)
+assert "bar_width" in ui.validate({"bar_width": 21})[1] and "from 4 to 20" in ui.validate({"bar_width": 21})[1]
+lk_home = Path(tempfile.mkdtemp())
+(lk_home / ".claude" / "session-guard").mkdir(parents=True)
+lk_file = lk_home / ".claude" / "session-guard" / "theme.json"
+real_dir, guard.STATE_DIR = guard.STATE_DIR, lk_home / ".claude" / "session-guard"
+try:
+    lk_file.write_text('{"link": false}')
+    assert ui.load()["link"] is False
+    lk_file.write_text('{"link": "x", "emoji": false}')
+    assert ui.load()["link"] is True and ui.load()["emoji"] is False  # a bad value falls back, the rest stays
+finally:
+    guard.STATE_DIR = real_dir
+th_file.unlink(missing_ok=True)
+assert th_cli("set", "link=off").returncode == 0 and saved()["link"] is False and "link      off" in th_cli("show").stdout
+r = th_cli("set", "link=maybe")
+assert r.returncode != 0 and "on or off" in r.stderr and saved()["link"] is False
+assert th_cli("set", "link=on").returncode == 0 and saved()["link"] is True and "link      on" in th_cli("show").stdout
+assert th_cli("apply", '{"link": false}').returncode == 0 and saved() == {"link": False}
+th_file.unlink(missing_ok=True)
+assert tp.ROWS[tp.ROWS.index("emoji") + 1] == "link" and tp.initial_state({})["link"] is True and tp.to_theme(tp.initial_state({})) == {"preset": "default"}
+nolink, _ = press(goto(tp.initial_state({}), "link"), "right")
+assert nolink["link"] is False and tp.to_theme(nolink) == {"preset": "default", "link": False} and press(nolink, " ")[0]["link"] is True
+assert "Clickable ctx   ‹ on ›" in plain(tp.render(tp.initial_state({}), 100)) and "› Clickable ctx   ‹ off ›" in plain(tp.render(goto(nolink, "link"), 100))
+assert "\033]8" not in "".join(tp.preview_lines(tp.initial_state({})))  # the picker's fake sessions have no page
+
+# Status line: ctx is an OSC 8 link when the session has a page and the theme says so; the text stays the same.
+URL = "file:///tmp/p%20q/view/s.html"
+linked = rd({**sess(150_000), "link": URL}, {})
+assert linked.count(f"\033]8;;{URL}\a") == 1 and linked.count("\033]8;;\a") == 1 and linked.index("\033]8;;") < linked.index("150k ctx") < linked.rindex("\033]8;;\a")
+assert plain(linked) == plain(rd(sess(150_000), {})) and "\033]8" not in rd(sess(150_000), {})
+assert "\033]8" not in rd({**sess(150_000), "link": URL}, {}, ui.effective({"link": False}))
+assert "\033]8" not in rd({"context": 0, "total": 0.0, "last_msg": 0.0, "link": URL}, {})  # empty line: no link
+os.environ["NO_COLOR"] = "1"
+try:
+    nc = rd({**sess(150_000), "link": URL}, {})
+    assert nc.startswith(f"\033]8;;{URL}\a") and "\033[" not in nc and plain(nc) == plain(rd(sess(150_000), {}, T)) == plain(linked)
+finally:
+    os.environ.pop("NO_COLOR", None)
+
+# The session page (view.py). Synthetic session with a distinctive marker in the prompt, the Bash command and the results;
+# a tool is called "</script>..." (a file name cannot hold a slash, a tool name can).
+import re as _re  # noqa: E402
+import shutil  # noqa: E402
+import time  # noqa: E402
+import urllib.parse  # noqa: E402
+
+import view  # noqa: E402
+
+MARK = "SECRET_MARKER_Zq9"
+EVIL = "</script><b>x&y"
+pv_t = transcript([
+    prompt(f"{MARK} please"), acall("v1", 10_000), acall("v2", 40_000), prompt(f"again {MARK}"),
+    acall("v3", 5_000, 0, {"type": "text", "text": MARK * 3}, use("b", "Bash", command=f"echo {MARK}"), use("r", EVIL, q=1), use("f", "Read", file_path="/x/a&b<c>.py")),
+    result("b", MARK * 100), result("r", "y" * 5000), result("f", "z" * 100), acall("v4", 20_000)])
+pv_dir = Path(tempfile.mkdtemp())
+real_dir, guard.STATE_DIR = guard.STATE_DIR, pv_dir
+try:
+    d = view.build(pv_t)
+    assert d["session"] == pv_t.stem and d["window"] == 200_000 and d["levels"] == [120_000, 160_000, 180_000] and d["context"] == 20_000
+    assert abs(d["percent"] - 0.1) < 1e-9 and set(d["cost"]) == {"total", "agents", "last_msg"} and d["jev"] is None and isinstance(d["generated_at"], str)
+    assert [c["context"] for c in d["calls"]] == [10_000, 40_000, 5_000, 20_000] and d["calls"][2] == {"context": 5_000, "delta": -35_000, "label": "compact"}
+    assert {i["label"] for i in d["items"]} >= {"Bash output", f"{EVIL} output", "Read a&b<c>.py"} and all(i["label"] != "Claude's replies" for i in d["tool_items"])
+    assert d["baseline"] + sum(i["tokens"] for i in d["items"]) == d["context"]
+    assert d["theme"] == ui.load() == ui.effective({})
+    assert json.loads(json.dumps(d["schema"])) == {"roles": list(ui.ROLES), "presets": ui.PRESETS, "bars": ui.BARS, "bar_width": list(ui.BAR_WIDTH),
+                                                    "segments": list(ui.SEGMENTS), "default_segments": ui.DEFAULT_SEGMENTS}
+    assert view.build(pv_t, ui.effective({"preset": "ocean"}))["theme"]["preset"] == "ocean"
+    blob = json.dumps(d)
+    assert MARK not in blob and "echo" not in blob and "please" not in blob and "again" not in blob  # no prompt, command or contents
+    (pv_dir / f"{pv_t.stem}.json").write_text(json.dumps({"window": 1_000_000, "jev": 0.3}))  # the state file the status line keeps
+    d2 = view.build(pv_t)
+    assert d2["window"] == 1_000_000 and d2["levels"] == [600_000, 800_000, 900_000] and d2["jev"] == 0.3
+    (pv_dir / f"{pv_t.stem}.json").unlink()
+    # render_html: the data goes in a JSON block that cannot be closed early.
+    html = view.render_html(d)
+    m = _re.search(r'<script type="application/json" id="session-data">(.*?)</script>', html, _re.S)
+    assert m and "{{SESSION_DATA}}" not in html and html.count("</script>") == 2  # the data block and the page's code
+    assert not any(ch in m.group(1) for ch in "<>&  ") and json.loads(m.group(1)) == json.loads(json.dumps(d))
+    assert any(i["label"].startswith("</script>") for i in json.loads(m.group(1))["items"]) and MARK not in html
+    assert "<img" not in html and view.render_html({**d, "calls": [{"context": 1, "delta": 0, "label": "a b"}]}).count(" ") == 0
+    # The template itself asks for nothing from the network.
+    tpl = (Path(__file__).resolve().parent / "web" / "view.html").read_text(encoding="utf-8")
+    assert not _re.search(r"(?:src|href|action)\s*=\s*[\"']?\s*(?:https?:)?//", tpl, _re.I) and "@import" not in tpl and "<link" not in tpl.lower()
+    assert not _re.search(r"url\(\s*[\"']?\s*(?:https?:)?//", tpl, _re.I) and not _re.search(r"\b(fetch|XMLHttpRequest|sendBeacon|WebSocket|EventSource|importScripts)\b|\bimport\s*\(", tpl)
+    assert set(_re.findall(r"https?://[^\s\"')<]+", tpl)) <= {"http://www.w3.org/2000/svg"}  # an XML namespace name, never requested
+    assert 'name="color-scheme"' in tpl and "prefers-color-scheme: dark" in tpl and 'name="viewport"' in tpl
+    # write(): the right place, owner-only, atomic, nothing left behind; link() is a file:// URL of it.
+    path = view.write(pv_t)
+    assert path == pv_dir / "view" / f"{pv_t.stem}.html" and path.exists() and "session-data" in path.read_text(encoding="utf-8")
+    assert os.name != "posix" or (path.stat().st_mode & 0o777 == 0o600), oct(path.stat().st_mode)
+    assert [f.name for f in path.parent.iterdir()] == [path.name]
+    url = view.link(pv_t)
+    assert url == path.as_uri() and url.startswith("file:///") and urllib.parse.unquote(urllib.parse.urlparse(url).path) == str(path)
+    old = path.read_text(encoding="utf-8")
+    real_replace = os.replace
+    def broken(*a):
+        raise OSError("disk full")
+    os.replace = broken
+    try:
+        try:
+            view.write(pv_t)
+            raise AssertionError("write should fail")
+        except OSError:
+            pass
+    finally:
+        os.replace = real_replace
+    assert path.read_text(encoding="utf-8") == old and [f.name for f in path.parent.iterdir()] == [path.name]  # old page intact, no temp file
+    # No calls at all still gives a page.
+    assert view.build(transcript([]))["calls"] == [] and "session-data" in view.render_html(view.build(transcript([])))
+finally:
+    guard.STATE_DIR = real_dir
+
+# The status line writes the page only when it is missing or older than the transcript (or the theme), and only when the link is on.
+sv_home = Path(tempfile.mkdtemp())
+sv_dir = sv_home / ".claude" / "session-guard"
+sv_page = sv_dir / "view" / f"{pv_t.stem}.html"
+sv_run = lambda **env: subprocess.run([sys.executable, "statusline.py"], capture_output=True, text=True, input=json.dumps(
+    {"session_id": pv_t.stem, "transcript_path": str(pv_t)}), env={**th_env, "HOME": str(sv_home), **env}).stdout
+out = sv_run()
+assert out.startswith(f"\033]8;;{sv_page.as_uri()}\a") and out.count("\033]8;;\a") == 1 and "20k ctx" in plain(out) and sv_page.exists(), repr(out)
+assert os.name != "posix" or sv_page.stat().st_mode & 0o777 == 0o600
+fresh = sv_page.stat().st_mtime_ns
+future = os.stat(pv_t).st_mtime + 100
+os.utime(sv_page, (future, future))
+fresh = sv_page.stat().st_mtime_ns
+assert sv_run() == out and sv_page.stat().st_mtime_ns == fresh  # fresh page: not rewritten
+os.utime(pv_t, (future + 100, future + 100))  # the transcript moved on
+sv_run()
+assert sv_page.stat().st_mtime_ns != fresh and sv_page.stat().st_mtime > future - 1000
+os.utime(sv_page, (future + 200, future + 200)); fresh = sv_page.stat().st_mtime_ns
+sv_dir.mkdir(parents=True, exist_ok=True); (sv_dir / "theme.json").write_text('{"emoji": false}')  # a newer theme also refreshes it
+os.utime(sv_dir / "theme.json", (future + 300, future + 300))
+sv_run()
+assert sv_page.stat().st_mtime_ns != fresh
+# Same text with the link on, off, and with NO_COLOR (which keeps the link).
+(sv_dir / "theme.json").write_text("{}")
+on, nc = sv_run(COLORTERM="truecolor"), sv_run(NO_COLOR="1")
+(sv_dir / "theme.json").write_text('{"link": false}')
+off = sv_run(COLORTERM="truecolor")
+assert "\033]8" in on and "\033]8" in nc and "\033]8" not in off and "\033[" not in nc and plain(on) == plain(off) == plain(nc) and "20k ctx" in off, (on, nc, off)
+# Link off: no page is written. A page that cannot be written: plain text, no link, no error.
+sv_home2 = Path(tempfile.mkdtemp())
+(sv_home2 / ".claude" / "session-guard").mkdir(parents=True)
+(sv_home2 / ".claude" / "session-guard" / "theme.json").write_text('{"link": false}')
+subprocess.run([sys.executable, "statusline.py"], input=json.dumps({"session_id": "z", "transcript_path": str(pv_t)}), capture_output=True, text=True,
+               env={**th_env, "HOME": str(sv_home2)})
+assert not (sv_home2 / ".claude" / "session-guard" / "view").exists()
+sv_home3 = Path(tempfile.mkdtemp())
+(sv_home3 / ".claude" / "session-guard").mkdir(parents=True)
+(sv_home3 / ".claude" / "session-guard" / "view").write_text("a file where the folder should be")
+r = subprocess.run([sys.executable, "statusline.py"], input=json.dumps({"session_id": "z", "transcript_path": str(pv_t)}), capture_output=True, text=True,
+                   env={**th_env, "HOME": str(sv_home3)})
+assert r.returncode == 0 and "20k ctx" in r.stdout and "\033]8" not in r.stdout and not r.stderr, r
+# ...and in process: a broken view.write or a missing view.py gives no link.
+real_write = view.write
+view.write = boom
+try:
+    assert statusline.page_link(pv_t, {}) is None
+finally:
+    view.write = real_write
+sys.modules["view"], saved_view = None, sys.modules["view"]  # `import view` now fails
+try:
+    assert statusline.page_link(pv_t, {}) is None
+finally:
+    sys.modules["view"] = saved_view
+# Nothing yet in the session: no output and no page.
+sv_empty = transcript([prompt("hi")])
+assert subprocess.run([sys.executable, "statusline.py"], input=json.dumps({"session_id": "e", "transcript_path": str(sv_empty)}), capture_output=True, text=True,
+                      env={**th_env, "HOME": str(sv_home3)}).stdout == ""
+
+# session-guard view: temporary HOME, a transcript under its ~/.claude/projects, run from a folder that maps to that project.
+vw_home, vw_cwd = Path(tempfile.mkdtemp()), Path(os.path.realpath(tempfile.mkdtemp()))
+vw_proj = vw_home / ".claude" / "projects" / _re.sub(r"[^A-Za-z0-9]", "-", str(vw_cwd))
+vw_proj.mkdir(parents=True)
+shutil.copy(pv_t, vw_proj / "aaaa-1111.jsonl")
+older = vw_proj / "old-0000.jsonl"
+shutil.copy(pv_t, older)
+os.utime(older, (1, 1))
+vw = lambda *a, cwd=vw_cwd, **env: subprocess.run([sys.executable, str(Path("cli.py").resolve()), "view", *a], capture_output=True, text=True, cwd=cwd,
+                                                  env={**th_env, "HOME": str(vw_home), **env})
+r = vw("--no-open")
+vw_page = vw_home / ".claude" / "session-guard" / "view" / "aaaa-1111.html"  # the newest transcript of this folder
+assert r.returncode == 0 and r.stdout.strip() == str(vw_page) and vw_page.exists() and "session-data" in vw_page.read_text(encoding="utf-8"), r
+assert MARK not in vw_page.read_text(encoding="utf-8")
+r = vw("--session", "old-0000", "--no-open")
+assert r.returncode == 0 and r.stdout.strip().endswith("old-0000.html") and (vw_page.parent / "old-0000.html").exists(), r
+assert vw("--no-open", "--session=old-0000").returncode == 0
+for args in (("--session", "nope", "--no-open"), ("--session", "../x", "--no-open"), ("--session", "*", "--no-open")):
+    r = vw(*args)
+    assert r.returncode != 0 and "No session found" in r.stderr, (args, r)
+r = vw("--no-open", cwd=tempfile.mkdtemp())  # a folder with no sessions
+assert r.returncode != 0 and "No session found" in r.stderr and "--session ID" in r.stderr, r
+assert vw("--bogus").returncode != 0
+# Without --no-open it hands the file:// URL to the browser ($BROWSER is a stand-in that records what it got).
+fake = Path(tempfile.mkdtemp()) / "fake-browser.sh"
+seen_url = fake.with_name("url.txt")
+fake.write_text(f'#!/bin/sh\necho "$1" > "{seen_url}"\n'); fake.chmod(0o755)
+r = vw(BROWSER=f"{fake} %s")
+for _ in range(50):
+    if seen_url.exists() and seen_url.read_text().strip():
+        break
+    time.sleep(0.1)
+assert r.returncode == 0 and seen_url.exists() and seen_url.read_text().strip() == vw_page.as_uri(), (r, seen_url.exists())
+
+# The page's own JavaScript (needs node; skipped without it): the same text and colours as statusline.py, and a theme command ui.validate accepts.
+if shutil.which("node"):
+    scripts = _re.findall(r"<script>(.*?)</script>", tpl, _re.S)
+    assert len(scripts) == 1
+    js_dir = Path(tempfile.mkdtemp())
+    (js_dir / "core.js").write_text(scripts[0], encoding="utf-8")
+    runner = ("const C=require(process.argv[1]);const cs=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log(JSON.stringify(cs.map(c=>"
+              "c.kind==='lines'?C.statusLines(c.theme,c.data,c.ctx):c.kind==='cmd'?C.command(C.initialState(c.theme,c.data.schema)):C.shellQuote(c.text))))")
+    js = lambda cases: json.loads(subprocess.run(["node", "-e", runner, str(js_dir / "core.js")], input=json.dumps(cases), capture_output=True, text=True, check=True).stdout)
+    def to_runs(text, theme):  # [(text, hex or None)] with neighbours of the same colour merged
+        hexes = {tuple(int(theme["colors"][r][i:i + 2], 16) for i in (1, 3, 5)): theme["colors"][r] for r in ui.ROLES}
+        out = []
+        for m in _re.finditer(r"\033\[38;2;(\d+);(\d+);(\d+)m(.*?)\033\[0m|([^\033]+)", text):
+            t, c = (m.group(4), hexes[tuple(int(m.group(i)) for i in (1, 2, 3))]) if m.group(4) is not None else (m.group(5), None)
+            out.append([t, c]) if not out or out[-1][1] != c else out[-1].__setitem__(0, out[-1][0] + t)
+        return [tuple(x) for x in out]
+    themes = [ui.effective({"mode": "truecolor"}),
+              ui.effective({"mode": "truecolor", "emoji": False, "bar": "dots", "bar_width": 7, "segments": [["ctx", "bar"], ["eta", "cost", "last"], ["jev", "grab", "hint"]]}),
+              ui.effective({"mode": "truecolor", "preset": "ocean", "bar": "solid", "bar_width": 20, "colors": {"warn": "#ff9900"}, "segments": [["hint", "ctx"], ["bar"]]})]
+    cases, expected = [], []
+    for theme in themes:
+        for ctx, total, agents, jev, last in ((140_000, 2.61, 0.34, 0.1, 0.14), (650_000, 9.4, 0, 0.5, 0.0), (850_000, 17.2, 1.1, 0.93, 1.25),
+                                              (950_000, 0.5, 0.004, None, 0.5), (20_000, 0.1, 0, None, 0.02), (600_000, 1.0, 0, 0.4, 0.1), (799_999, 1.0, 0, 0.79, 0.1)):
+            session = {"context": ctx, "total": total, "last_msg": last, "agents": agents, "prompts": ["x"], "peak": ctx, "grab": "top: Read report.py +38k",
+                       "prompt_ctx": [ctx - 3 * 25_000, ctx - 2 * 25_000, ctx - 25_000, ctx]}
+            state = {"window": 1_000_000, **({"jev": jev} if jev is not None else {})}
+            data = {"levels": guard.levels(1_000_000), "window": 1_000_000, "cost": {"total": total, "agents": agents, "last_msg": last}, "prompt_ctx": session["prompt_ctx"],
+                    "jev": jev, "tool_items": [{"label": "Read report.py", "tokens": 38_000, "count": 1}], "schema": {"bars": ui.BARS}}
+            cases.append({"kind": "lines", "theme": theme, "data": data, "ctx": ctx})
+            expected.append([to_runs(line, theme) for line in statusline.render(session, state, theme).split("\n")])
+    # Compare precisely, case by case (text and the colour of every stretch).
+    results = js(cases)
+    for case, got, want in zip(cases, results, expected):
+        colors = case["theme"]["colors"]
+        have = []
+        for line in got:
+            runs = []
+            for run in line:
+                c = colors[run["role"]] if run["role"] else None
+                runs.append([run["t"], c]) if not runs or runs[-1][1] != c else runs[-1].__setitem__(0, runs[-1][0] + run["t"])
+            have.append([tuple(x) for x in runs])
+        assert have == want, (case["ctx"], have, want)
+    assert js([{"kind": "lines", "theme": themes[0], "data": cases[0]["data"], "ctx": 0}]) == [[]]  # nothing before the first reply
+    link_on = js([{"kind": "lines", "theme": themes[0], "data": cases[0]["data"], "ctx": 140_000}])[0][0][0]
+    assert link_on["link"] is True and link_on["t"] == "💸 140k ctx"
+    # The command: valid for ui.validate, whatever the layout, and safe in a shell.
+    cmd_cases = [{"kind": "cmd", "theme": t, "data": {"schema": d["schema"]}} for t in (
+        ui.effective({}), ui.effective({"preset": "colorblind", "link": False, "emoji": False, "bar_width": 4, "bar": "dots"}),
+        ui.effective({"colors": {"ok": "#123456"}, "segments": [["hint"], ["ctx", "cost"], ["bar"]]}))]
+    for case, cmd in zip(cmd_cases, js(cmd_cases)):
+        assert cmd.startswith("session-guard theme apply '") and cmd.endswith("'")
+        payload = json.loads(subprocess.run(["sh", "-c", f"printf %s {cmd[len('session-guard theme apply '):]}"], capture_output=True, text=True, check=True).stdout)
+        clean, error = ui.validate(payload)
+        assert error is None and ui.effective(clean) == case["theme"], (error, payload)
+    quoted = js([{"kind": "quote", "text": t} for t in ("a'b", "'", "", "it's \"x\" $HOME `y`")])
+    assert quoted[0] == "'a'\\''b'" and [subprocess.run(["sh", "-c", f"printf %s {q}"], capture_output=True, text=True).stdout for q in quoted] == ["a'b", "'", "", "it's \"x\" $HOME `y`"]
+
 
 print("all good")

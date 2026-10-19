@@ -1,0 +1,841 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Session · session-guard</title>
+<style>
+/* Everything is inline: this page makes no network requests and works from file://. */
+:root {
+  color-scheme: light dark;
+  --bg: #f4f4f1; --surface: #ffffff; --surface-2: #f8f8f5;
+  --ink: #17191c; --muted: #585e66; --line: #e2e2dc; --grid: #e8e8e2;
+  --series: #2a5bd7; --series-soft: rgba(42, 91, 215, .2); --focus: #2a5bd7;
+  --shadow: 0 1px 2px rgba(20, 20, 10, .05), 0 12px 28px -16px rgba(20, 20, 10, .18);
+  /* Overwritten from your saved theme at load. */
+  --ok: #87af87; --warn: #d7af5f; --danger: #d75f5f; --dim: #8a8a8a;
+  --term-bg: #15171a; --term-fg: #d6d6d6; --term-line: #2c2f33;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101113; --surface: #191b1e; --surface-2: #1f2226;
+    --ink: #ecece8; --muted: #a2a8b0; --line: #2a2d32; --grid: #25282c;
+    --series: #7ea6ff; --series-soft: rgba(126, 166, 255, .22); --focus: #8fb2ff;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 28px -16px rgba(0, 0, 0, .7);
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--sans); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+code, .mono, output, pre, td.num, th.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.wrap { max-width: 1040px; margin: 0 auto; padding: 24px 16px 56px; }
+
+/* header */
+.top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; margin-bottom: 16px; }
+.kicker { font: 600 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+h1 { font-size: 24px; line-height: 1.2; margin: 0; letter-spacing: -.01em; font-weight: 650; }
+h1 code { font-size: .86em; font-weight: 500; background: var(--surface-2); border: 1px solid var(--line); padding: 1px 8px; border-radius: 8px; }
+.stamp { color: var(--muted); font-size: 13px; margin: 0; }
+h2 { font-size: 16px; margin: 0 0 4px; font-weight: 650; letter-spacing: -.005em; }
+.lead { color: var(--muted); margin: 0 0 16px; font-size: 14px; max-width: 70ch; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); padding: 20px; }
+section.card { margin-top: 16px; }
+.hero { display: grid; gap: 16px; grid-template-columns: 1fr; }
+@media (min-width: 760px) { .hero { grid-template-columns: 1.7fr 1fr; } }
+.hero .card { margin: 0; }
+.label { font: 600 12px/1.2 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+.big { font: 600 44px/1 var(--mono); letter-spacing: -.03em; margin: 0; font-variant-numeric: tabular-nums; }
+.big small { font-size: 16px; font-weight: 500; color: var(--muted); letter-spacing: 0; margin-left: 6px; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 0 0; color: var(--muted); font-size: 14px; }
+.pill { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--surface-2); color: var(--ink);
+  border-radius: 999px; padding: 3px 12px 3px 9px; font: 600 12px/1.4 var(--mono); }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--line); }
+/* context meter: the zones are your theme's ok / warn / danger colours, split at the warning levels (set from JS) */
+.meter { position: relative; margin: 22px 0 44px; height: 16px; }
+.meter .zones, .meter .fill { position: absolute; inset: 0; border-radius: 8px; background: var(--zones); }
+.meter .zones { opacity: .26; }
+.meter .fill { clip-path: inset(0 var(--rest, 100%) 0 0 round 8px); }
+.meter .ring { position: absolute; inset: 0; border-radius: 8px; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 18%, transparent); pointer-events: none; }
+.tick { position: absolute; top: -5px; bottom: -5px; width: 0; border-left: 2px solid var(--surface); transform: translateX(-1px); }
+.tick span { position: absolute; top: 100%; left: 0; transform: translateX(-50%); margin-top: 5px; text-align: center; white-space: nowrap;
+  font: 11px/1.25 var(--mono); color: var(--muted); }
+.tick span b { display: block; color: var(--ink); font-weight: 600; }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 10px 12px; margin: 0; align-items: baseline; }
+.kv dt { color: var(--muted); font-size: 14px; }
+.kv dd { margin: 0; font: 600 17px/1.2 var(--mono); text-align: right; }
+.kv .total { display: contents; }
+.kv .total dd { font-size: 30px; letter-spacing: -.02em; }
+.hint { margin: 16px 0 0; color: var(--muted); font-size: 13px; line-height: 1.4; }
+
+/* controls */
+fieldset.seg2 { margin: 0; min-width: 0; }
+.seg2 { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; padding: 2px; background: var(--surface-2); }
+.seg2 label { position: relative; }
+.seg2 input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.seg2 span { display: block; padding: 4px 12px; border-radius: 8px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.seg2 input:checked + span { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--line); font-weight: 600; }
+.seg2 input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 1px; }
+.bar-head { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 8px 16px; }
+button, select { font: inherit; color: var(--ink); }
+button { background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; padding: 6px 12px; cursor: pointer; line-height: 1.2; }
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { opacity: .45; cursor: default; }
+button[aria-pressed="true"] { background: var(--series-soft); border-color: var(--series); }
+button.primary { background: var(--series); border-color: var(--series); color: #fff; font-weight: 600; padding: 8px 16px; }
+@media (prefers-color-scheme: dark) { button.primary { color: #0b1020; } }
+select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px; max-width: 100%; }
+.chk { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+input[type=checkbox] { flex: none; width: 17px; height: 17px; accent-color: var(--series); margin: 0; }
+
+/* chart */
+.chart-wrap { position: relative; margin-top: 8px; }
+.chart-wrap svg { display: block; width: 100%; touch-action: pan-y; }
+.chart-wrap:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; border-radius: 8px; }
+.chart text { font: 11px var(--mono); fill: var(--muted); }
+.chart .halo { paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
+.chart .lvl-label { fill: var(--ink); }
+.chart .grid { stroke: var(--grid); stroke-width: 1; }
+.chart .axis { stroke: var(--muted); stroke-opacity: .5; }
+.chart .line { fill: none; stroke: var(--series); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .pt { fill: var(--series); stroke: var(--surface); stroke-width: 2; }
+.chart .lvl { stroke-width: 1.5; stroke-dasharray: 6 4; }
+.chart .compact-line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 1 4; stroke-linecap: round; }
+.chart .compact-mark { fill: var(--surface); stroke: var(--ink); stroke-width: 1.75; }
+.chart .cross { stroke: var(--ink); stroke-opacity: .5; stroke-width: 1; }
+.tip { position: absolute; z-index: 2; pointer-events: none; min-width: 170px; max-width: min(300px, calc(100% - 16px)); padding: 10px 12px;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); font-size: 13px; line-height: 1.4; }
+.tip[hidden] { display: none; }
+.tip .t1 { font: 600 11px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.tip .t2 { font: 600 17px var(--mono); margin: 2px 0 4px; }
+.tip .t3 { color: var(--muted); }
+.tip .t3 b { color: var(--ink); font-weight: 600; }
+.tip .ell { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: 13px; }
+.legend li { display: inline-flex; align-items: center; gap: 7px; }
+.legend svg { width: 22px; height: 12px; flex: none; }
+details { margin-top: 14px; }
+summary { cursor: pointer; color: var(--muted); font-size: 14px; width: fit-content; }
+summary:hover { color: var(--ink); }
+.scroll { max-height: 280px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; margin-top: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+caption { text-align: left; padding: 8px 12px; color: var(--muted); }
+th, td { padding: 5px 12px; text-align: left; border-top: 1px solid var(--line); white-space: nowrap; }
+th { position: sticky; top: 0; background: var(--surface-2); font-weight: 600; }
+td.num, th.num { text-align: right; }
+td.cut { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.empty { border: 1px dashed var(--line); border-radius: 12px; padding: 28px 16px; text-align: center; color: var(--muted); margin: 8px 0 0; }
+
+/* grabs */
+.strip { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--grid); margin: 4px 0 8px; box-shadow: inset 0 0 0 1px var(--line); }
+.strip i { display: block; flex: none; min-width: 0; }
+.strip i + i { box-shadow: inset 2px 0 0 var(--surface); }
+.sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 6px; }
+.sw-base { background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.sw-tool { background: var(--series); }
+.sw-talk { background: repeating-linear-gradient(45deg, var(--series) 0 2px, transparent 2px 5px); box-shadow: inset 0 0 0 1px var(--series); }
+ol.grabs { list-style: none; margin: 14px 0 0; padding: 0; }
+.grab { display: grid; grid-template-columns: minmax(120px, 1.2fr) 2fr 58px 44px; align-items: center; gap: 4px 12px; padding: 7px 0; border-top: 1px solid var(--line); }
+.grab:first-child { border-top: 0; }
+.g-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 13.5px var(--mono); }
+.g-label em { font: 12px var(--mono); color: var(--muted); font-style: normal; margin-left: 6px; }
+.g-bar { height: 12px; border-radius: 6px; background: var(--grid); overflow: hidden; }
+.g-bar i { display: block; height: 100%; border-radius: 0 6px 6px 0; background: var(--series); min-width: 2px; }
+.grab.talk .g-bar i { background: repeating-linear-gradient(45deg, var(--series) 0 2px, color-mix(in srgb, var(--series) 25%, transparent) 2px 5px); }
+.g-num { text-align: right; font: 600 13.5px var(--mono); }
+.g-pct { text-align: right; font: 13px var(--mono); color: var(--muted); }
+.grab.base .g-bar { background: none; }
+.baseline { margin-top: 12px; padding-top: 8px; border-top: 2px solid var(--line); }
+.baseline .grab { border: 0; padding-bottom: 2px; }
+.baseline p { margin: 0 0 0; color: var(--muted); font-size: 13px; }
+@media (max-width: 560px) {
+  .grab { grid-template-columns: 1fr auto auto; grid-template-areas: "l l l" "b n p"; }
+  .g-label { grid-area: l; } .g-bar { grid-area: b; } .g-num { grid-area: n; } .g-pct { grid-area: p; }
+  .big { font-size: 38px; } .card { padding: 16px; }
+}
+.note { margin: 16px 0 0; padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; color: var(--muted); font-size: 13px; }
+.note b { color: var(--ink); }
+
+/* theme studio */
+.studio { display: grid; gap: 20px; grid-template-columns: 1fr; }
+@media (min-width: 900px) { .studio { grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); align-items: start; }
+  .studio .preview-col { position: sticky; top: 16px; order: 2; } .studio .controls { order: 1; } }
+.term { background: var(--term-bg); color: var(--term-fg); border: 1px solid var(--term-line); border-radius: 12px; overflow: hidden; }
+.term[data-bg="light"] { --term-bg: #fbfbf8; --term-fg: #26282b; --term-line: #d9d9d2; }
+.term-bar { display: flex; align-items: center; gap: 6px; padding: 9px 12px; border-bottom: 1px solid var(--term-line); }
+.term-bar i { width: 10px; height: 10px; border-radius: 50%; background: color-mix(in srgb, var(--term-fg) 28%, transparent); }
+.term-bar span { margin-left: 8px; font: 12px var(--mono); opacity: .6; }
+.term-body { padding: 12px 14px 14px; overflow-x: auto; }
+.term-body .cap { font: 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; opacity: .55; margin: 12px 0 4px; }
+.term-body .cap:first-child { margin-top: 0; }
+.term-body .ln { font: 13px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.term-body .ln u { text-decoration-style: dotted; text-underline-offset: 3px; }
+.term-body .none { font: 13px var(--mono); opacity: .55; }
+.pv-opts { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+.field { display: grid; grid-template-columns: 120px 1fr; gap: 6px 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.field:first-of-type { border-top: 0; }
+.field > label, .field > .fl { color: var(--muted); font-size: 14px; }
+.colors { display: grid; gap: 8px; }
+.crow { display: grid; grid-template-columns: 44px 1fr; align-items: center; gap: 12px; }
+.crow input[type=color] { width: 44px; height: 32px; padding: 2px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.crow output { font-size: 13px; }
+.crow .d { color: var(--muted); font-size: 12.5px; line-height: 1.3; margin-top: 1px; }
+.crow b { font: 600 13px var(--mono); }
+.crow label { cursor: pointer; }
+.range { display: flex; align-items: center; gap: 12px; }
+.range input { flex: 1; min-width: 0; accent-color: var(--series); }
+.range output { min-width: 2ch; font-size: 14px; text-align: right; }
+ul.segs { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.sg { display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 6px 10px; padding: 7px 10px; border-top: 1px solid var(--line); background: var(--surface); }
+.sg:first-child { border-top: 0; }
+.sg.off .nm { opacity: .55; }
+.sg .nm { display: inline-flex; align-items: center; gap: 10px; min-width: 0; flex: 1; cursor: pointer; }
+.sg .btns { flex: none; }
+.sg .nm code { font-weight: 600; display: block; }
+.sg .nm span { color: var(--muted); font-size: 12.5px; line-height: 1.3; display: block; }
+.sg .btns { display: inline-flex; gap: 4px; }
+.sg button { padding: 3px 9px; font-size: 13px; }
+li.brk { padding: 3px 10px; background: var(--surface-2); border-top: 1px dashed var(--line); font: 11px var(--mono); color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+.cmd-box { margin-top: 14px; }
+pre.cmd { margin: 8px 0 0; padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; white-space: pre-wrap; word-break: break-all; font-size: 12.5px; line-height: 1.5; max-height: 190px; overflow: auto; }
+.cmd-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.status { color: var(--muted); font-size: 13px; min-height: 1.4em; }
+.edited { font: 600 11px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--ink); background: var(--series-soft); border-radius: 999px; padding: 2px 9px; }
+.edited[hidden] { display: none; }
+@media (max-width: 560px) { .sg { flex-wrap: wrap; } .field { grid-template-columns: 1fr; gap: 2px; } }
+footer { margin: 24px 4px 0; color: var(--muted); font-size: 13px; }
+footer p { margin: 0 0 6px; max-width: 80ch; }
+.err { border: 1px solid #d75f5f; background: var(--surface); padding: 16px; border-radius: 12px; margin-top: 16px; }
+@media (prefers-reduced-motion: no-preference) { .fill, .g-bar i, .strip i { transition: clip-path .4s ease, width .4s ease; } }
+</style>
+</head>
+<body>
+<noscript><div class="wrap"><p>This page draws its charts with JavaScript, which is switched off. Nothing is sent anywhere.</p></div></noscript>
+<div class="wrap" id="app" hidden>
+
+<header class="top">
+  <div>
+    <p class="kicker">session-guard</p>
+    <h1>Session <code id="sid" title=""></code></h1>
+  </div>
+  <p class="stamp" id="stamp"></p>
+</header>
+
+<div class="hero">
+  <section class="card" aria-labelledby="h-ctx">
+    <p class="label" id="h-ctx">Context now</p>
+    <p class="big"><span id="ctx-now">0</span><small id="ctx-of"></small></p>
+    <div class="row"><span class="pill"><span class="dot" id="zone-dot"></span><span id="zone-text"></span></span><span id="ctx-pct"></span></div>
+    <div class="meter" id="meter" role="img"><div class="zones"></div><div class="fill"></div><div class="ring"></div></div>
+  </section>
+  <section class="card" aria-labelledby="h-cost">
+    <p class="label" id="h-cost">Cost</p>
+    <dl class="kv">
+      <div class="total"><dt>So far</dt><dd id="cost-total">$0.00</dd></div>
+      <dt>Subagents</dt><dd id="cost-agents">$0.00</dd>
+      <dt>Last message</dt><dd id="cost-last">$0.00</dd>
+    </dl>
+    <p class="hint">Every message re-sends the whole session, so the bigger it gets, the more each one costs.</p>
+  </section>
+</div>
+
+<section class="card" aria-labelledby="h-chart">
+  <div class="bar-head">
+    <div>
+      <h2 id="h-chart">Context growth</h2>
+      <p class="lead" id="chart-lead">Context size at each call to the model.</p>
+    </div>
+    <fieldset class="seg2" aria-label="Chart scale">
+      <label><input type="radio" name="scale" value="fit" checked><span>Fit to data</span></label>
+      <label><input type="radio" name="scale" value="full"><span>Full window</span></label>
+    </fieldset>
+  </div>
+  <div id="chart-box">
+    <div class="chart-wrap" id="chart-wrap" tabindex="0" role="img" aria-describedby="chart-help">
+      <svg class="chart" id="chart" aria-hidden="true" focusable="false"></svg>
+      <div class="tip" id="tip" hidden></div>
+    </div>
+    <p class="sr-only" id="chart-help">Use the left and right arrow keys to move between calls. Shift moves ten at a time; Home and End jump to the ends.</p>
+    <p class="sr-only" id="chart-live" aria-live="polite"></p>
+    <ul class="legend" id="legend"></ul>
+  </div>
+  <p class="empty" id="chart-empty" hidden>No calls yet. The chart appears after the first reply.</p>
+  <details id="calls-details">
+    <summary>Show the chart as a table</summary>
+    <div class="scroll"><table id="calls-table"><caption>Context per call, oldest first</caption>
+      <thead><tr><th class="num" scope="col">Call</th><th class="num" scope="col">Context</th><th class="num" scope="col">Change</th><th scope="col">Biggest part of the change</th></tr></thead>
+      <tbody></tbody></table></div>
+  </details>
+</section>
+
+<section class="card" aria-labelledby="h-grabs">
+  <div class="bar-head">
+    <div>
+      <h2 id="h-grabs">Biggest grabs</h2>
+      <p class="lead">What made the context grow, biggest first. These are the things you can change.</p>
+    </div>
+    <label class="chk"><input type="checkbox" id="with-talk"> Include the conversation itself (replies and your messages)</label>
+  </div>
+  <div id="strip-box">
+    <div class="strip" id="strip" role="img"></div>
+    <ul class="legend" id="strip-legend"></ul>
+  </div>
+  <ol class="grabs" id="grabs"></ol>
+  <p class="empty" id="grabs-empty" hidden></p>
+  <p><button type="button" id="more" hidden aria-expanded="false"></button></p>
+  <div class="baseline" id="baseline"></div>
+  <p class="note"><b>Sizes are estimates; the total is exact.</b> The growth between two calls is shared by the text length of what arrived
+    (Claude's reply without its thinking, tool results, your messages). Read "+38k" as "about 38k".
+    <b>Not in this page:</b> prompt text, commands and file contents. Only tool names, file base names and numbers.</p>
+</section>
+
+<section class="card" aria-labelledby="h-studio">
+  <h2 id="h-studio">Theme studio</h2>
+  <p class="lead">Design the status line and watch it change. A plain file page cannot write your settings, so copy the command at the bottom and paste it in a terminal.</p>
+  <div class="studio">
+    <div class="preview-col">
+      <div class="pv-opts">
+        <span>Preview with your real numbers</span>
+        <fieldset class="seg2" aria-label="Terminal background">
+          <label><input type="radio" name="termbg" value="dark" checked><span>Dark terminal</span></label>
+          <label><input type="radio" name="termbg" value="light"><span>Light terminal</span></label>
+        </fieldset>
+      </div>
+      <div class="term" id="term" data-bg="dark" role="group" aria-label="Status line preview">
+        <div class="term-bar"><i></i><i></i><i></i><span>status line</span></div>
+        <div class="term-body" id="term-body"></div>
+      </div>
+      <p class="lead" style="margin:10px 0 0;font-size:13px">The preview uses exact colours. A terminal in 256-colour mode rounds them to the nearest one.</p>
+    </div>
+    <div class="controls">
+      <div class="field"><label for="f-preset">Preset</label><div><select id="f-preset"></select> <span class="edited" id="edited" hidden>unsaved changes</span></div></div>
+      <div class="field"><span class="fl" id="l-colors">Colours</span><div class="colors" id="colors" role="group" aria-labelledby="l-colors"></div></div>
+      <div class="field"><label for="f-bar">Bar style</label><select id="f-bar"></select></div>
+      <div class="field"><label for="f-width">Bar width</label><div class="range"><input type="range" id="f-width" step="1"><output id="o-width" for="f-width"></output></div></div>
+      <div class="field"><span class="fl">Options</span><div>
+        <label class="chk"><input type="checkbox" id="f-emoji"> Emoji (💸 🧭)</label><br>
+        <label class="chk" style="margin-top:6px"><input type="checkbox" id="f-link"> Clickable <code>ctx</code> (opens this page)</label></div></div>
+      <div class="field"><span class="fl" id="l-segs">Segments</span><div>
+        <ul class="segs" id="segs" aria-labelledby="l-segs"></ul>
+        <p class="lead" style="margin:8px 0 0;font-size:13px">Tick to show. Arrows reorder. "Line break" starts a new line after that segment.</p></div></div>
+    </div>
+  </div>
+  <div class="cmd-box">
+    <p class="label">Apply it</p>
+    <div class="cmd-actions">
+      <button type="button" class="primary" id="copy">Copy command</button>
+      <button type="button" id="reset">Reset</button>
+      <span class="status" id="copy-status" role="status"></span>
+    </div>
+    <pre class="cmd" id="cmd" tabindex="0" aria-label="The command to paste in a terminal"></pre>
+  </div>
+</section>
+
+<footer>
+  <p>This page is a snapshot of one session. It is rewritten when your status line next updates, so reload the tab to see new data, or run <code>session-guard view</code>.</p>
+  <p>It is a local file. It loads nothing from the internet and sends nothing anywhere.</p>
+</footer>
+</div>
+
+<script type="application/json" id="session-data">{{SESSION_DATA}}</script>
+<script>
+"use strict";
+/* ============================ Pure helpers (no DOM) ============================
+   Everything here is also loaded by the repo's self-check (test_guard.py) under node. */
+var Core = (function () {
+  var HEX = /^#[0-9a-f]{6}$/i;
+  var SEG_HELP = { ctx: "context size", bar: "how full the window is", eta: "messages left to the next level",
+    cost: "cost so far", last: "cost of your last message", jev: "new-task check", grab: "what grew the context most", hint: "/handover hint" };
+
+  function fmtK(n) { return Math.abs(n) >= 1000 ? Math.round(n / 1000) + "k" : String(Math.round(n)); }
+  function fmtDelta(n) {
+    var a = Math.abs(n), s = n < 0 ? "−" : "+";
+    return s + (a >= 10000 ? Math.round(a / 1000) + "k" : a >= 1000 ? (a / 1000).toFixed(1) + "k" : String(a));
+  }
+  function fmtWindow(w) { return w >= 1e6 ? Number((w / 1e6).toFixed(2)) + "M" : fmtK(w); }
+  function pct(x) { return Math.round(x * 100) + "%"; }
+  function usd(x) { return "$" + x.toFixed(2); }
+  function zone(tokens, lvls) { var n = 0; for (var i = 0; i < 2 && i < lvls.length; i++) if (tokens >= lvls[i]) n++; return ["ok", "warn", "danger"][n]; }
+
+  /* ---- Port of statusline.eta ---- */
+  function eta(promptCtx, ctx, lvls) {
+    var g = [], i;
+    for (i = 1; i < promptCtx.length; i++) if (promptCtx[i] >= promptCtx[i - 1]) g.push(promptCtx[i] - promptCtx[i - 1]);
+    var nxt = lvls.filter(function (l) { return l > ctx; });
+    var sum = g.reduce(function (a, b) { return a + b; }, 0);
+    if (!g.length || !nxt.length || sum <= 0) return "";
+    var n = Math.ceil((nxt[0] - ctx) / (sum / g.length));
+    return "~" + (n <= 99 ? n : "99+") + " " + (n === 1 ? "msg" : "msgs") + " to " + Math.floor(nxt[0] / 1000) + "k";
+  }
+
+  /* ---- Port of statusline.render: the same text and colour roles for each segment ----
+     d: the page data. theme: {colors, bar, bar_width, emoji, link, segments}. ctx: tokens.
+     Returns lines; a line is a list of runs {t: text, role: ok|warn|danger|dim|null, link?: true}. Rounding of x.5 can differ by one
+     from Python's (half-even) in rare cases. */
+  function statusLines(theme, d, ctx) {
+    if (!ctx) return [];
+    var lvls = d.levels, window_ = d.window;
+    var reached = lvls.filter(function (l) { return ctx >= l; }).length;
+    var glyphs = Array.from(d.schema.bars[theme.bar] || d.schema.bars.blocks);
+    var width = theme.bar_width;
+    var filled = Math.min(width, Math.ceil(ctx / window_ * width));
+    var emoji = function (e) { return theme.emoji ? e + " " : ""; };
+    var seg = {};
+    seg.ctx = [{ t: emoji("💸") + Math.round(ctx / 1000) + "k ctx", role: zone(ctx, lvls), link: !!theme.link }];
+    var runs = [], i, z, last = null;
+    for (i = 0; i < filled; i++) {  // one run per stretch of same-zone cells
+      z = zone(i / width * window_, lvls);
+      if (last && last.role === z) last.t += glyphs[0]; else { last = { t: glyphs[0], role: z }; runs.push(last); }
+    }
+    if (width - filled > 0) runs.push({ t: glyphs[1].repeat(width - filled), role: "dim" });
+    runs.push({ t: " ", role: null }, { t: pct(ctx / window_), role: zone(ctx, lvls) });
+    seg.bar = runs;
+    var e = eta(d.prompt_ctx || [], ctx, lvls);
+    seg.eta = e ? [{ t: e, role: null }] : [];
+    seg.cost = [{ t: usd(d.cost.total) + (d.cost.agents >= 0.005 ? " (agents " + usd(d.cost.agents) + ")" : ""), role: null }];
+    seg.last = [{ t: "last msg " + usd(d.cost.last_msg), role: null }];
+    seg.jev = [];
+    if (d.jev !== null && d.jev !== undefined) {
+      seg.jev = d.jev >= 0.8 ? [{ t: emoji("🧭") + "new task? " + pct(d.jev), role: "danger" }]
+        : d.jev >= 0.4 ? [{ t: emoji("🧭") + "unsure " + pct(d.jev), role: "warn" }]
+        : [{ t: emoji("🧭") + "same task", role: "ok" }];
+    }
+    var top = (d.tool_items || [])[0];
+    seg.grab = reached && top ? [{ t: "top: " + top.label + " +" + Math.round(top.tokens / 1000) + "k", role: "dim" }] : [];
+    seg.hint = reached === 1 ? [{ t: "/handover soon", role: "warn" }] : reached > 1 ? [{ t: "/handover now", role: "danger" }] : [];
+    return theme.segments.map(function (names) {
+      var out = [];
+      names.forEach(function (n) {
+        if (!(seg[n] && seg[n].length)) return;
+        if (out.length) out.push({ t: " · ", role: "dim" });
+        out.push.apply(out, seg[n]);
+      });
+      return out;
+    }).filter(function (l) { return l.length; });
+  }
+
+  /* ---- Studio state <-> the theme JSON that `session-guard theme apply` takes (see ui.py) ---- */
+  function initialState(theme, schema) {
+    var order = [], breaks = {}, shown = {};
+    theme.segments.forEach(function (line, li) {
+      line.forEach(function (n) { order.push(n); shown[n] = true; });
+      if (li < theme.segments.length - 1) breaks[line[line.length - 1]] = true;
+    });
+    schema.segments.forEach(function (n, idx) {  // hidden ones go back where the usual order puts them
+      if (shown[n]) return;
+      var at = -1;
+      order.forEach(function (m, pos) { if (schema.segments.indexOf(m) < idx) at = pos; });
+      order.splice(at + 1, 0, n);
+      if (at >= 0 && breaks[order[at]]) { breaks[n] = true; delete breaks[order[at]]; }
+    });
+    var colors = {};
+    schema.roles.forEach(function (r) { colors[r] = theme.colors[r]; });
+    return { preset: theme.preset, colors: colors, bar: theme.bar, bar_width: theme.bar_width, emoji: theme.emoji, link: theme.link,
+      mode: theme.mode, order: order, shown: shown, breaks: breaks };
+  }
+  function linesOf(s) {
+    var lines = [], cur = [];
+    s.order.forEach(function (n) {
+      if (s.shown[n]) cur.push(n);
+      if (s.breaks[n] && cur.length) { lines.push(cur); cur = []; }
+    });
+    if (cur.length) lines.push(cur);
+    return lines;
+  }
+  function themeOf(s) {  // exactly what ui.validate accepts
+    return { preset: s.preset, colors: s.colors, bar: s.bar, bar_width: s.bar_width, emoji: s.emoji, link: s.link, mode: s.mode, segments: linesOf(s) };
+  }
+  function shellQuote(text) { return "'" + text.replace(/'/g, "'\\''") + "'"; }
+  function command(s) { return "session-guard theme apply " + shellQuote(JSON.stringify(themeOf(s))); }
+  function safeColor(c, fallback) { return typeof c === "string" && HEX.test(c) ? c : fallback; }
+
+  return { fmtK: fmtK, fmtDelta: fmtDelta, fmtWindow: fmtWindow, pct: pct, usd: usd, zone: zone, eta: eta, statusLines: statusLines,
+    initialState: initialState, linesOf: linesOf, themeOf: themeOf, shellQuote: shellQuote, command: command, safeColor: safeColor, SEG_HELP: SEG_HELP };
+})();
+if (typeof module !== "undefined") module.exports = Core;
+
+/* ================================ The page (DOM) ================================ */
+function boot() {
+  var D = JSON.parse(document.getElementById("session-data").textContent);
+  var $ = function (id) { return document.getElementById(id); };
+  var NS = "http://www.w3.org/2000/svg";  // an XML namespace name, not a request
+  var F = Core;
+  var DEFAULTS = D.schema.presets["default"];
+  var ROLE_HELP = { ok: "below the first warning level", warn: "between the first and second level", danger: "beyond the second level",
+    dim: "separators and empty bar cells" };
+  var theme = D.theme;
+  var palette = {};
+  D.schema.roles.forEach(function (r) { palette[r] = F.safeColor(theme.colors[r], DEFAULTS[r]); });
+  var el = function (tag, attrs, parent, text) {
+    var n = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+    if (text !== undefined) n.textContent = text;
+    if (parent) parent.appendChild(n);
+    return n;
+  };
+  var svg = function (tag, attrs, parent, text) {
+    var n = document.createElementNS(NS, tag);
+    Object.keys(attrs || {}).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+    if (text !== undefined) n.textContent = text;
+    if (parent) parent.appendChild(n);
+    return n;
+  };
+  var root = document.documentElement.style;
+  D.schema.roles.forEach(function (r) { root.setProperty("--" + r, palette[r]); });
+  var short = D.session.slice(0, 8);
+  document.title = "Session " + short + " · session-guard";
+  $("sid").textContent = short; $("sid").title = D.session;
+
+  /* ---------- header ---------- */
+  var ctx = D.context, win = D.window, lv = D.levels;
+  var reached = lv.filter(function (l) { return ctx >= l; }).length;
+  $("ctx-now").textContent = ctx ? F.fmtK(ctx) : "0";
+  $("ctx-of").textContent = "of " + F.fmtWindow(win) + " tokens";
+  $("ctx-pct").textContent = ctx ? F.pct(ctx / win) + " full" : "no replies yet";
+  var z = F.zone(ctx, lv);
+  $("zone-dot").style.background = "var(--" + z + ")";
+  $("zone-text").textContent = reached === 0 ? "OK" : reached === 1 ? "Getting big · /handover soon" : "Big · /handover now";
+  var d0 = new Date(D.generated_at);
+  $("stamp").textContent = "Generated " + (isNaN(d0) ? D.generated_at : d0.toLocaleString([], { dateStyle: "medium", timeStyle: "short" }));
+  var meter = $("meter");
+  var p1 = lv.length > 0 ? lv[0] / win * 100 : 100, p2 = lv.length > 1 ? lv[1] / win * 100 : 100;
+  meter.style.setProperty("--zones", "linear-gradient(90deg, var(--ok) 0 " + p1 + "%, var(--warn) " + p1 + "% " + p2 + "%, var(--danger) " + p2 + "% 100%)");
+  meter.style.setProperty("--rest", (100 - Math.min(100, ctx / win * 100)) + "%");
+  meter.setAttribute("aria-label", "Context " + F.fmtK(ctx) + " of " + F.fmtWindow(win) + ", " + F.pct(ctx / win) + ". Warning levels at " +
+    lv.map(function (l) { return F.pct(l / win); }).join(", ") + ".");
+  lv.forEach(function (l) {
+    var t = el("div", { "class": "tick", "aria-hidden": "true" }, meter);
+    t.style.left = (l / win * 100) + "%";
+    var s = el("span", {}, t);
+    el("b", {}, s, F.pct(l / win));
+    s.appendChild(document.createTextNode(F.fmtK(l)));
+  });
+  $("cost-total").textContent = F.usd(D.cost.total);
+  $("cost-agents").textContent = F.usd(D.cost.agents);
+  $("cost-last").textContent = F.usd(D.cost.last_msg);
+
+  /* ---------- chart ---------- */
+  var calls = D.calls, sel = -1, scale = "fit";
+  var wrap = $("chart-wrap"), chart = $("chart"), tip = $("tip");
+  var geo = null;
+  var compacts = calls.filter(function (c) { return c.label === "compact"; }).length;
+  var peak = calls.reduce(function (m, c) { return Math.max(m, c.context); }, 0);
+  var summary = calls.length ? "Context per call, " + calls.length + (calls.length === 1 ? " call" : " calls") + ": from " + F.fmtK(calls[0].context) + " to " +
+    F.fmtK(calls[calls.length - 1].context) + " tokens, peak " + F.fmtK(peak) + ", window " + F.fmtWindow(win) + ". Warning levels at " +
+    lv.map(function (l) { return F.fmtK(l); }).join(", ") + (compacts ? ". The context was reset " + compacts + (compacts === 1 ? " time." : " times.") : ".") +
+    " The full data is in the table below." : "No calls yet.";
+  wrap.setAttribute("aria-label", summary);
+  $("chart-lead").textContent = calls.length ? "Context size at each call to the model" + (calls.length >= 200 ? " (the latest 200)" : "") +
+    ". Hover, touch or use the arrow keys to see what grew it." : "Context size at each call to the model.";
+
+  function niceTicks(max) {
+    var raw = Math.max(max, 1000) / 4, p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
+    var step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p, t = [];
+    for (var v = 0; v <= max + 1e-6; v += step) t.push(Math.round(v));
+    return t;
+  }
+  function ymaxFor() {
+    if (scale === "full") return Math.max(win, peak * 1.05);
+    var next = lv.filter(function (l) { return l > peak; })[0];
+    return Math.max(peak * 1.12, next ? next * 1.06 : Math.max(win, peak * 1.08), 1000);
+  }
+  function drawChart() {
+    $("chart-box").hidden = !calls.length; $("chart-empty").hidden = !!calls.length;
+    if (!calls.length) return;
+    var W = Math.max(280, wrap.clientWidth || 640), H = W < 520 ? 250 : 310, n = calls.length;
+    var m = { l: 46, r: 12, t: 14, b: 28 }, pw = W - m.l - m.r, ph = H - m.t - m.b, ymax = ymaxFor();
+    var x = function (i) { return n === 1 ? m.l + pw / 2 : m.l + pw * i / (n - 1); };
+    var y = function (v) { return m.t + ph * (1 - v / ymax); };
+    geo = { x: x, y: y, m: m, pw: pw, W: W, H: H };
+    chart.setAttribute("viewBox", "0 0 " + W + " " + H);
+    chart.setAttribute("height", H);
+    chart.textContent = "";
+    var defs = svg("defs", {}, chart);
+    var g = svg("linearGradient", { id: "area", x1: "0", y1: "0", x2: "0", y2: "1" }, defs);
+    svg("stop", { offset: "0", "stop-color": "var(--series)", "stop-opacity": ".28" }, g);
+    svg("stop", { offset: "1", "stop-color": "var(--series)", "stop-opacity": ".02" }, g);
+    // Zone bands in your theme colours.
+    var edges = [0].concat(lv.slice(0, 2).filter(function (l) { return l < ymax; }), [ymax]);
+    edges.slice(0, -1).forEach(function (lo, i) {
+      svg("rect", { x: m.l, y: y(edges[i + 1]), width: pw, height: Math.max(0, y(lo) - y(edges[i + 1])), fill: "var(--" + ["ok", "warn", "danger"][i] + ")", "fill-opacity": ".09" }, chart);
+    });
+    niceTicks(ymax).forEach(function (v) {
+      svg("line", { "class": "grid", x1: m.l, x2: m.l + pw, y1: y(v), y2: y(v) }, chart);
+      svg("text", { x: m.l - 8, y: y(v) + 4, "text-anchor": "end" }, chart, F.fmtK(v));
+    });
+    svg("line", { "class": "axis", x1: m.l, x2: m.l + pw, y1: y(0), y2: y(0) }, chart);
+    var labels = n === 1 ? [[0, "middle"]] : [[0, "start"], [n - 1, "end"]];
+    labels.forEach(function (a) { svg("text", { x: x(a[0]), y: H - 8, "text-anchor": a[1] }, chart, "call " + (a[0] + 1)); });
+    // Warning levels.
+    lv.forEach(function (l, i) {
+      if (l > ymax) return;
+      svg("line", { "class": "lvl", x1: m.l, x2: m.l + pw, y1: y(l), y2: y(l), stroke: "var(--" + (i === 0 ? "warn" : "danger") + ")" }, chart);
+      svg("text", { "class": "halo lvl-label", x: m.l + 6, y: y(l) - 6 }, chart, F.pct(l / win) + " · " + F.fmtK(l));
+    });
+    // Compactions, then the line.
+    calls.forEach(function (c, i) {
+      if (c.label !== "compact") return;
+      svg("line", { "class": "compact-line", x1: x(i), x2: x(i), y1: m.t, y2: y(0) }, chart);
+    });
+    var pts = calls.map(function (c, i) { return x(i).toFixed(1) + "," + y(c.context).toFixed(1); });
+    if (n > 1) {
+      svg("path", { d: "M" + x(0).toFixed(1) + "," + y(0) + " L" + pts.join(" L") + " L" + x(n - 1).toFixed(1) + "," + y(0) + " Z", fill: "url(#area)" }, chart);
+      svg("polyline", { "class": "line", points: pts.join(" ") }, chart);
+    }
+    if (n <= 40) calls.forEach(function (c, i) { if (c.label !== "compact") svg("circle", { "class": "pt", cx: x(i), cy: y(c.context), r: n === 1 ? 5 : 3 }, chart); });
+    calls.forEach(function (c, i) {
+      if (c.label !== "compact") return;
+      var cx = x(i), cy = y(c.context);
+      svg("path", { "class": "compact-mark", d: "M" + cx + "," + (cy - 6) + " L" + (cx + 6) + "," + cy + " L" + cx + "," + (cy + 6) + " L" + (cx - 6) + "," + cy + " Z" }, chart);
+    });
+    svg("g", { id: "hover" }, chart);
+    if (sel >= 0) showTip(Math.min(sel, n - 1), false);
+  }
+  function showTip(i, announce) {
+    sel = i;
+    var c = calls[i], h = chart.querySelector("#hover");
+    h.textContent = "";
+    svg("line", { "class": "cross", x1: geo.x(i), x2: geo.x(i), y1: geo.m.t, y2: geo.y(0) }, h);
+    svg("circle", { "class": "pt", cx: geo.x(i), cy: geo.y(c.context), r: 5 }, h);
+    tip.hidden = false; tip.textContent = "";
+    el("div", { "class": "t1" }, tip, "Call " + (i + 1) + " of " + calls.length);
+    el("div", { "class": "t2" }, tip, c.context.toLocaleString("en-US") + " tokens · " + F.pct(c.context / win));
+    var t3 = el("div", { "class": "t3" }, tip);
+    var text = "";
+    if (c.label === "compact") { text = "Context was reset here (compact or clear)"; t3.textContent = text; }
+    else if (i === 0) { text = "First call in this list"; t3.textContent = text; }
+    else {
+      el("div", {}, t3).appendChild(document.createTextNode(F.fmtDelta(c.delta) + " since the previous call"));
+      text = F.fmtDelta(c.delta) + " since the previous call";
+      if (c.label) {
+        var b = el("span", { "class": "ell", title: c.label }, t3, "Biggest part: ");
+        el("b", {}, b, c.label);
+        text += ". Biggest part: " + c.label;
+      }
+    }
+    var xpx = geo.x(i) * wrap.clientWidth / geo.W, ypx = geo.y(c.context);
+    var tw = tip.offsetWidth, th = tip.offsetHeight, W = wrap.clientWidth;
+    var left = xpx + 14 + tw > W - 4 ? xpx - 14 - tw : xpx + 14;
+    tip.style.left = Math.max(4, left) + "px";
+    tip.style.top = Math.max(4, Math.min(ypx - th - 10, geo.H - th - 30)) + "px";
+    if (announce) $("chart-live").textContent = "Call " + (i + 1) + ": " + c.context + " tokens. " + text;
+  }
+  function hideTip() { sel = -1; tip.hidden = true; var h = chart.querySelector("#hover"); if (h) h.textContent = ""; }
+  function indexAt(clientX) {
+    var r = chart.getBoundingClientRect(), x = (clientX - r.left) * geo.W / r.width;
+    return calls.length === 1 ? 0 : Math.max(0, Math.min(calls.length - 1, Math.round((x - geo.m.l) / geo.pw * (calls.length - 1))));
+  }
+  wrap.addEventListener("pointermove", function (e) { if (calls.length && geo) showTip(indexAt(e.clientX), false); });
+  wrap.addEventListener("pointerdown", function (e) { if (calls.length && geo) showTip(indexAt(e.clientX), false); });
+  wrap.addEventListener("pointerleave", function () { if (document.activeElement !== wrap) hideTip(); });
+  wrap.addEventListener("blur", hideTip);
+  wrap.addEventListener("keydown", function (e) {
+    if (!calls.length) return;
+    var step = e.shiftKey ? 10 : 1, i = sel < 0 ? calls.length - 1 : sel, k = e.key;
+    if (k === "ArrowLeft") i -= step; else if (k === "ArrowRight") i += step;
+    else if (k === "Home") i = 0; else if (k === "End") i = calls.length - 1;
+    else if (k === "Escape") { hideTip(); return; } else return;
+    e.preventDefault();
+    showTip(Math.max(0, Math.min(calls.length - 1, i)), true);
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("input[name=scale]"), function (r) {
+    r.addEventListener("change", function () { scale = r.value; drawChart(); });
+  });
+  var raf = 0, lastW = 0;
+  var redraw = function () { cancelAnimationFrame(raf); raf = requestAnimationFrame(function () { if (wrap.clientWidth !== lastW) { lastW = wrap.clientWidth; drawChart(); } }); };
+  if (window.ResizeObserver) new ResizeObserver(redraw).observe(wrap); else window.addEventListener("resize", redraw);
+
+  // Legend
+  var lg = $("legend");
+  var legendItem = function (draw, text) { var li = el("li", {}, lg); var s = svg("svg", { viewBox: "0 0 22 12", "aria-hidden": "true" }, li); draw(s); li.appendChild(document.createTextNode(text)); };
+  legendItem(function (s) { svg("line", { x1: 1, x2: 21, y1: 6, y2: 6, stroke: "var(--series)", "stroke-width": 2, "stroke-linecap": "round" }, s); }, "context at each call");
+  legendItem(function (s) { svg("line", { x1: 1, x2: 21, y1: 6, y2: 6, stroke: "var(--warn)", "stroke-width": 1.5, "stroke-dasharray": "6 4" }, s);
+    }, "warning level");
+  legendItem(function (s) { ["ok", "warn", "danger"].forEach(function (r, i) { svg("rect", { x: i * 7, y: 1, width: 7, height: 10, fill: "var(--" + r + ")", "fill-opacity": ".3" }, s); }); }, "ok / warn / danger zones");
+  if (compacts) legendItem(function (s) { svg("path", { d: "M11,0.5 L16.5,6 L11,11.5 L5.5,6 Z", fill: "var(--surface)", stroke: "var(--ink)", "stroke-width": 1.5 }, s); }, "compact or clear (context reset)");
+
+  // Table
+  var tb = document.querySelector("#calls-table tbody");
+  calls.forEach(function (c, i) {
+    var tr = el("tr", {}, tb);
+    el("td", { "class": "num" }, tr, String(i + 1));
+    el("td", { "class": "num" }, tr, c.context.toLocaleString("en-US"));
+    el("td", { "class": "num" }, tr, i === 0 ? "–" : F.fmtDelta(c.delta));
+    el("td", { "class": "cut", title: c.label }, tr, c.label === "compact" ? "compact (context reset)" : c.label || "–");
+  });
+  if (!calls.length) $("calls-details").hidden = true;
+
+  /* ---------- grabs ---------- */
+  var CONVO = ["Claude's replies", "your messages"];
+  var shownAll = false, LIMIT = 10;
+  function grabRow(parent, item, cls, maxTokens) {
+    var li = el("li", { "class": "grab " + cls }, parent);
+    var lab = el("span", { "class": "g-label", title: item.label }, li, item.label);
+    if (item.count > 1) el("em", {}, lab, "×" + item.count);
+    var bar = el("span", { "class": "g-bar", "aria-hidden": "true" }, li);
+    if (maxTokens) el("i", {}, bar).style.width = Math.max(0.5, item.tokens / maxTokens * 100) + "%";  // no bar for the baseline: the strip above shows it to scale
+    el("span", { "class": "g-num" }, li, "+" + F.fmtK(item.tokens));
+    el("span", { "class": "g-pct", title: "share of the context now" }, li, ctx ? (item.tokens && item.tokens / ctx < 0.005 ? "<1%" : F.pct(item.tokens / ctx)) : "–");
+  }
+  function drawGrabs() {
+    var talk = $("with-talk").checked;
+    var list = (talk ? D.items : D.tool_items).slice();
+    var max = list.length ? list[0].tokens : 0, ol = $("grabs");
+    ol.textContent = "";
+    list.slice(0, shownAll ? list.length : LIMIT).forEach(function (it) { grabRow(ol, it, CONVO.indexOf(it.label) >= 0 ? "talk" : "", max); });
+    var e = $("grabs-empty");
+    e.hidden = list.length > 0;
+    e.textContent = !D.items.length ? "No growth to explain yet. The first call is all baseline."
+      : "Nothing but the conversation itself grew the context. Tick the box above to see it.";
+    var more = $("more");
+    more.hidden = list.length <= LIMIT;
+    more.textContent = shownAll ? "Show fewer" : "Show all " + list.length;
+    more.setAttribute("aria-expanded", String(shownAll));
+  }
+  $("with-talk").addEventListener("change", drawGrabs);
+  $("more").addEventListener("click", function () { shownAll = !shownAll; drawGrabs(); });
+  drawGrabs();
+  // Baseline and the split of the context now.
+  var sumTool = D.tool_items.reduce(function (a, i) { return a + i.tokens; }, 0);
+  var sumTalk = D.items.reduce(function (a, i) { return a + (CONVO.indexOf(i.label) >= 0 ? i.tokens : 0); }, 0);
+  var parts = [["sw-base", "Baseline", D.baseline], ["sw-tool", "Tool results", sumTool], ["sw-talk", "The conversation", sumTalk]];
+  var strip = $("strip");
+  if (ctx) {
+    strip.setAttribute("aria-label", "Context now: " + parts.map(function (p) { return p[1] + " " + F.pct(p[2] / ctx); }).join(", "));
+    var cols = ["color-mix(in srgb, var(--muted) 45%, transparent)", "var(--series)", "repeating-linear-gradient(45deg, var(--series) 0 2px, color-mix(in srgb, var(--series) 25%, transparent) 2px 5px)"];
+    parts.forEach(function (p, i) { var s = el("i", {}, strip); s.style.width = (p[2] / ctx * 100) + "%"; s.style.background = cols[i]; });
+    var sl = $("strip-legend");
+    parts.forEach(function (p) {
+      var li = el("li", {}, sl); el("span", { "class": "sw " + p[0], "aria-hidden": "true" }, li);
+      li.appendChild(document.createTextNode(p[1] + " " + F.pct(p[2] / ctx)));
+    });
+  } else $("strip-box").hidden = true;
+  var bl = $("baseline");
+  if (ctx) {
+    var ol2 = el("ol", { "class": "grabs", style: "margin:0" }, bl);
+    grabRow(ol2, { label: "Baseline", tokens: D.baseline, count: 1 }, "base", 0);
+    el("p", {}, bl, "System prompt, tools, memory — not counted as a grab.");
+  } else bl.hidden = true;
+
+  /* ---------- theme studio ---------- */
+  var S = F.initialState(theme, D.schema), initialJson = JSON.stringify(F.themeOf(S));
+  var fPreset = $("f-preset"), fBar = $("f-bar"), fWidth = $("f-width");
+  Object.keys(D.schema.presets).forEach(function (p) { el("option", { value: p }, fPreset, p); });
+  Object.keys(D.schema.bars).forEach(function (b) { el("option", { value: b }, fBar, b + "  " + D.schema.bars[b]); });
+  fWidth.min = D.schema.bar_width[0]; fWidth.max = D.schema.bar_width[1];
+  var colorIn = {}, colorOut = {};
+  D.schema.roles.forEach(function (r) {
+    var row = el("div", { "class": "crow" }, $("colors"));
+    colorIn[r] = el("input", { type: "color", id: "c-" + r, "aria-label": r + " colour" }, row);
+    var rest = el("div", {}, row);
+    var nm = el("label", { "for": "c-" + r }, rest); el("b", {}, nm, r);
+    colorOut[r] = el("output", { "for": "c-" + r, style: "margin-left:10px" }, rest);
+    el("div", { "class": "d" }, rest, ROLE_HELP[r]);
+    colorIn[r].addEventListener("input", function () { S.colors[r] = colorIn[r].value.toLowerCase(); sync(); });
+  });
+  fPreset.addEventListener("change", function () { S.preset = fPreset.value; S.colors = Object.assign({}, D.schema.presets[S.preset]); sync(); });
+  fBar.addEventListener("change", function () { S.bar = fBar.value; sync(); });
+  fWidth.addEventListener("input", function () { S.bar_width = parseInt(fWidth.value, 10); sync(); });
+  $("f-emoji").addEventListener("change", function () { S.emoji = this.checked; sync(); });
+  $("f-link").addEventListener("change", function () { S.link = this.checked; sync(); });
+  Array.prototype.forEach.call(document.querySelectorAll("input[name=termbg]"), function (r) {
+    r.addEventListener("change", function () { $("term").setAttribute("data-bg", r.value); });
+  });
+
+  var focusKey = null;
+  function drawSegs() {
+    var ul = $("segs"), n = S.order.length, count = Object.keys(S.shown).filter(function (k) { return S.shown[k]; }).length;
+    ul.textContent = "";
+    S.order.forEach(function (name, i) {
+      var li = el("li", { "class": "sg" + (S.shown[name] ? "" : " off") }, ul);
+      var lab = el("label", { "class": "nm" }, li);
+      var cb = el("input", { type: "checkbox" }, lab); cb.checked = !!S.shown[name];
+      cb.disabled = S.shown[name] && count === 1;  // the last visible segment cannot be hidden
+      cb.addEventListener("change", function () { S.shown[name] = cb.checked; focusKey = "cb:" + name; sync(); });
+      var tx = el("div", {}, lab); el("code", {}, tx, name); el("span", {}, tx, F.SEG_HELP[name] || "");
+      var btns = el("span", { "class": "btns" }, li);
+      var mv = function (dir, text, label) {
+        var b = el("button", { type: "button", "aria-label": label + " " + name, "data-k": dir + name }, btns, text);
+        b.disabled = dir === "u" ? i === 0 : i === n - 1;
+        b.addEventListener("click", function () {
+          var j = dir === "u" ? i - 1 : i + 1, t = S.order[j]; S.order[j] = S.order[i]; S.order[i] = t;
+          focusKey = b.disabled ? null : dir + name; sync();
+        });
+      };
+      mv("u", "↑", "Move up"); mv("d", "↓", "Move down");
+      var br = el("button", { type: "button", "aria-pressed": String(!!S.breaks[name]), "data-k": "b" + name, "aria-label": "Line break after " + name }, btns, "⏎ break");
+      br.disabled = i === n - 1;
+      br.addEventListener("click", function () { if (S.breaks[name]) delete S.breaks[name]; else S.breaks[name] = true; focusKey = "b" + name; sync(); });
+      if (S.breaks[name] && i < n - 1) el("li", { "class": "brk", "aria-hidden": "true" }, ul, "↳ new line");
+    });
+    if (focusKey) {
+      var t = focusKey.indexOf("cb:") === 0 ? ul.querySelectorAll("li.sg")[S.order.indexOf(focusKey.slice(3))].querySelector("input")
+        : ul.querySelector('[data-k="' + focusKey.replace(/"/g, "") + '"]');
+      if (t && !t.disabled) t.focus();
+      focusKey = null;
+    }
+  }
+  function drawPreview() {
+    var body = $("term-body"), th = F.themeOf(S);
+    body.textContent = "";
+    [["Now · " + (ctx ? F.pct(ctx / win) : "empty"), ctx], ["If it were 65% full", Math.round(win * .65)], ["If it were 85% full", Math.round(win * .85)]].forEach(function (f) {
+      el("div", { "class": "cap" }, body, f[0]);
+      var lines = F.statusLines(th, D, f[1]);
+      if (!lines.length) el("div", { "class": "none" }, body, "(nothing: the status line stays empty until the first reply)");
+      lines.forEach(function (runs) {
+        var ln = el("div", { "class": "ln" }, body);
+        runs.forEach(function (r) {
+          var host = r.link ? el("u", { title: "Cmd+click (or Ctrl+click) opens this page" }, ln) : ln;
+          var s = el("span", {}, host, r.t);
+          if (r.role) s.style.color = F.safeColor(S.colors[r.role], DEFAULTS[r.role]);
+        });
+      });
+    });
+  }
+  function sync() {
+    D.schema.roles.forEach(function (r) { colorIn[r].value = S.colors[r]; colorOut[r].textContent = S.colors[r]; });
+    fPreset.value = S.preset; fBar.value = S.bar; fWidth.value = S.bar_width; $("o-width").textContent = S.bar_width;
+    $("f-emoji").checked = S.emoji; $("f-link").checked = S.link;
+    drawSegs(); drawPreview();
+    $("cmd").textContent = F.command(S);
+    var edited = JSON.stringify(F.themeOf(S)) !== initialJson;
+    $("edited").hidden = !edited;
+    $("copy-status").textContent = "";
+  }
+  var copied;
+  $("copy").addEventListener("click", function () {
+    var text = $("cmd").textContent, st = $("copy-status");
+    var done = function () { st.textContent = "Copied"; $("copy").textContent = "Copied ✓"; clearTimeout(copied); copied = setTimeout(function () { $("copy").textContent = "Copy command"; st.textContent = ""; }, 1800); };
+    var select = function () { var r = document.createRange(); r.selectNodeContents($("cmd")); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); };
+    var fallback = function () {  // file:// pages often have no navigator.clipboard
+      select();
+      var ok = false; try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      if (ok) done(); else st.textContent = "Could not copy. The command is selected: press Ctrl+C (Cmd+C on a Mac).";
+    };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, fallback); else fallback();
+  });
+  $("reset").addEventListener("click", function () { S = F.initialState(theme, D.schema); sync(); $("copy-status").textContent = "Back to your saved theme"; });
+  sync();
+
+  $("app").hidden = false;
+  drawChart();
+}
+if (typeof document !== "undefined") {
+  try { boot(); }
+  catch (e) {
+    var app = document.getElementById("app");
+    app.hidden = false;
+    var box = document.createElement("div");
+    box.className = "err";
+    box.textContent = "This page could not draw itself: " + e.message;
+    app.insertBefore(box, app.firstChild);
+  }
+}
+</script>
+</body>
+</html>

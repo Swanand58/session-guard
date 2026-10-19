@@ -1,10 +1,10 @@
 """What made the context grow: a rough split of a session's context by where it came from.
 
-    grabs(transcript, sidechain=False) -> {
+    grabs(transcript, sidechain=False, keep=60) -> {
         "context":  int,   # context size of the last call (exact)
         "baseline": int,   # tokens not attributed to anything below: system prompt, tools, memory files, summary
         "items":    [{"label": str, "tokens": int, "count": int}, ...],   # biggest first
-        "calls":    [{"context": int, "delta": int, "label": str}, ...],  # last 60 calls; delta < 0 is a drop
+        "calls":    [{"context": int, "delta": int, "label": str}, ...],  # last `keep` calls; delta < 0 is a drop
     }
     baseline + sum of item tokens == context. An unreadable file gives zeros and empty lists.
 
@@ -70,9 +70,9 @@ def _add(items: dict, label: str, tokens: float) -> None:
     item[1] += 1
 
 
-def _grabs(path: Path, sidechain: bool) -> dict:
+def _grabs(path: Path, sidechain: bool, keep: int) -> dict:
     seen, names, pending, items = set(), {}, [], {}  # pending: (label, chars) that arrived since the last call
-    calls = deque(maxlen=60)
+    calls = deque(maxlen=keep)
     prev = None  # context of the previous call
     reply = last_reply = 0  # visible chars of the latest response, and of the one before (the one that led to this gap)
     for e in guard.entries(path):
@@ -125,10 +125,13 @@ def _grabs(path: Path, sidechain: bool) -> dict:
     return {"context": context, "baseline": max(0, context - sum(i["tokens"] for i in ranked)), "items": ranked, "calls": list(calls)}
 
 
-def grabs(transcript: Path, sidechain: bool = False) -> dict:
-    """Where the context came from (see the top of this file). sidechain=True for a subagent's own transcript file."""
+def grabs(transcript: Path, sidechain: bool = False, keep: int = 60) -> dict:
+    """Where the context came from (see the top of this file). sidechain=True for a subagent's own transcript file.
+
+    keep: how many of the latest calls "calls" holds (the session page asks for more).
+    """
     try:
-        return _grabs(Path(transcript), sidechain)
+        return _grabs(Path(transcript), sidechain, keep)
     except Exception:  # unreadable file
         return {"context": 0, "baseline": 0, "items": [], "calls": []}
 

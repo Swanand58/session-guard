@@ -4,6 +4,7 @@
     💸 172k ctx · ▰▰▰▰▰▰▰▰▱▱ 86% · ~4 msgs to 180k · $4.61 (agents $0.67) · last msg $0.28 · 🧭 same task · /handover now
 
 Colours and layout come from the theme: session-guard theme.
+`ctx` links to the session page (session-guard view) in terminals that support it.
 
 Any arguments are run as another status line command first (its output is
 kept above ours), so an existing status line keeps working:
@@ -48,6 +49,19 @@ def top_grab(session: dict) -> str:
         return ""
 
 
+def page_link(transcript: Path, session: dict) -> str | None:
+    """URL of the session page (view.py), rewritten first if the transcript or the theme is newer. None on any failure."""
+    try:
+        import view  # here, so a missing file only drops the link
+        page = view.page_path(transcript)
+        newest = max(transcript.stat().st_mtime, ui.theme_file().stat().st_mtime if ui.theme_file().exists() else 0)
+        if not page.exists() or page.stat().st_mtime < newest:
+            view.write(transcript, session=session)
+        return view.link(transcript)
+    except Exception:
+        return None
+
+
 def render(session: dict, state: dict, theme: dict | None = None) -> str:
     ctx = session["context"]
     if not ctx:
@@ -65,8 +79,11 @@ def render(session: dict, state: dict, theme: dict | None = None) -> str:
     filled = min(width, math.ceil(ctx / window * width))
     cells = "".join(paint(filled_char * len(list(run)), z)  # one escape per run of same-zone cells
                     for z, run in groupby(zone(i / width * window) for i in range(filled)))
+    ctx_text = paint(f"{emoji('💸')}{ctx / 1000:.0f}k ctx", zone(ctx))
+    if session.get("link") and theme.get("link", True):  # OSC 8 hyperlink: not a colour, so NO_COLOR keeps it
+        ctx_text = f"\033]8;;{session['link']}\a{ctx_text}\033]8;;\a"
     seg = {
-        "ctx": paint(f"{emoji('💸')}{ctx / 1000:.0f}k ctx", zone(ctx)),
+        "ctx": ctx_text,
         "bar": cells + paint(empty_char * (width - filled), "dim") + " " + paint(f"{ctx / window:.0%}", zone(ctx)),
         "eta": eta(session, ctx, lvls),
         "cost": f"${session['total']:.2f}" + (f" (agents ${session['agents']:.2f})" if session.get("agents", 0) >= 0.005 else ""),
@@ -116,7 +133,11 @@ def main() -> None:
                 state_file.write_text(json.dumps(state))
             except OSError:
                 pass  # still draw the line
-        line = render({**guard.read_session(transcript), "transcript": transcript}, state)
+        theme = ui.load()
+        session = {**guard.read_session(transcript), "transcript": transcript}
+        if theme["link"] and session["context"]:
+            session["link"] = page_link(transcript, session)
+        line = render(session, state, theme)
         if line:
             print(line)
     except Exception:

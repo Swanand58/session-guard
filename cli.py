@@ -16,10 +16,12 @@
     session-guard theme show               print the theme and a preview
     session-guard theme list               every preset, previewed
     session-guard theme use <preset>       default | ocean | mono | high-contrast | colorblind
-    session-guard theme set <key>=<value>  ok|warn|danger|dim=#rrggbb, bar, bar_width, emoji=on|off, mode,
-                                           segments=ctx,bar|cost (| starts a new line)
+    session-guard theme set <key>=<value>  ok|warn|danger|dim=#rrggbb, bar, bar_width, emoji=on|off, link=on|off,
+                                           mode, segments=ctx,bar|cost (| starts a new line)
     session-guard theme reset              back to the defaults
     session-guard theme apply '<json>'     set the whole theme from JSON
+    session-guard view [--session ID] [--no-open]
+                                           the session page: context chart, biggest grabs, cost, theme studio
     session-guard test                     run the self-checks
 """
 
@@ -40,6 +42,7 @@ import install  # noqa: E402
 import themepicker  # noqa: E402
 import ui  # noqa: E402
 
+KEYS = (*ui.ROLES, "bar", "bar_width", "emoji", "link", "mode", "segments")  # what `theme set` takes
 INSTALL_URL = "https://raw.githubusercontent.com/Swanand58/session-guard/main/install.sh"
 
 
@@ -128,6 +131,7 @@ def show() -> None:
         print(f"  {role:<9} {ui.paint('██', role, theme)} {theme['colors'][role]}")
     print(f"  bar       {theme['bar']}, {theme['bar_width']} wide")
     print(f"  emoji     {'on' if theme['emoji'] else 'off'}")
+    print(f"  link      {'on' if theme['link'] else 'off'} (ctx opens the session page)")
     print(f"  mode      {theme['mode']}")
     print(f"  segments  {' | '.join(', '.join(line) for line in theme['segments'])}")
     print("\nPreview (14%, 65% and 85% of a 1M window):")
@@ -152,13 +156,13 @@ def theme(args: list) -> None:
         for pair in rest:
             key, sep, value = pair.partition("=")
             key = key.strip()
-            if not sep or key not in (*ui.ROLES, "bar", "bar_width", "emoji", "mode", "segments"):
-                sys.exit(f"Not saved. Use key=value, with key one of: {', '.join((*ui.ROLES, 'bar', 'bar_width', 'emoji', 'mode', 'segments'))}")
+            if not sep or key not in KEYS:
+                sys.exit(f"Not saved. Use key=value, with key one of: {', '.join(KEYS)}")
             if key in ui.ROLES:
                 new["colors"] = {**new.get("colors", {}), key: value}
             elif key == "bar_width":
                 new[key] = int(value) if value.strip().lstrip("-").isdigit() else value
-            elif key == "emoji":
+            elif key in ("emoji", "link"):
                 new[key] = {"on": True, "off": False}.get(value.strip().lower(), value)
             elif key == "segments":
                 new[key] = [[n.strip() for n in line.split(",") if n.strip()] for line in value.split("|")]
@@ -176,6 +180,31 @@ def theme(args: list) -> None:
         change(data)
     else:
         sys.exit(__doc__)
+
+
+def view(args: list) -> None:
+    """Write the session page and open it in the browser."""
+    import re
+    import webbrowser
+
+    import recall
+    import view as page
+    opts = [a for a in args if a != "--no-open"]
+    if opts[:1] == ["--session"] and len(opts) == 2:
+        sid = opts[1]
+    elif opts[:1] and opts[0].startswith("--session=") and len(opts) == 1:
+        sid = opts[0][len("--session="):]
+    elif not opts:
+        sid = recall.current_id(os.getcwd())
+    else:
+        sys.exit(__doc__)
+    found = sorted(recall.PROJECTS.glob(f"*/{sid}.jsonl"), key=lambda f: f.stat().st_mtime) if sid and re.fullmatch(r"[\w.-]+", sid) else []
+    if not found:
+        sys.exit(f"No session found ({sid or 'no transcript for this folder'}) in {recall.PROJECTS}. Use: session-guard view --session ID")
+    path = page.write(found[-1])
+    print(path)
+    if "--no-open" not in args and not webbrowser.open(path.as_uri()):
+        print("Could not open a browser. Open the file above yourself.")
 
 
 def status() -> None:
@@ -235,6 +264,8 @@ def main(argv: list | None = None) -> None:
         jev(rest)
     elif cmd == "theme":
         theme(rest)
+    elif cmd == "view":
+        view(rest)
     elif cmd == "test":
         sys.exit(subprocess.call([sys.executable, str(HERE / "test_guard.py")], cwd=HERE))
     else:
