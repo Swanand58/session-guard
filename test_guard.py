@@ -310,15 +310,65 @@ assert s["statusLine"]["command"].endswith("statusline.py sh -c '~/my line.sh'")
 assert (home / ".claude" / "commands" / "handover.md").exists()
 assert (home / ".claude" / "session-guard" / "recall.py").resolve() == Path("recall.py").resolve()
 assert len(list((home / ".claude").glob("settings.json.*.bak"))) == 1  # second run changed nothing
+cmd = home / ".local" / "bin" / "session-guard"
+assert cmd.is_symlink() and cmd.resolve() == Path("cli.py").resolve(), cmd  # the command; second run kept it
+assert (home / ".claude" / "session-guard" / "before.json").exists()  # baseline saved by the install
+cli = lambda *a: subprocess.run([sys.executable, "cli.py", *a], env={**os.environ, "HOME": str(home)},
+                                capture_output=True, text=True).stdout
+assert "warning hook (prompts)   yes" in cli("status") and "session-guard command    yes" in cli("status")
 out = run("uninstall")
+assert not cmd.is_symlink() and (home / ".claude" / "session-guard" / "before.json").exists(), out  # reports are kept
+assert "NO" in cli("status")
 assert json.loads((home / ".claude" / "settings.json").read_text()) == original, out
 assert not (home / ".claude" / "commands" / "handover.md").exists()
 assert not (home / ".claude" / "session-guard" / "recall.py").is_symlink()
 home = Path(tempfile.mkdtemp())  # fresh Mac: no ~/.claude yet
 out = run()
-assert "Jev new-task check is OFF" in out, out
+assert "session-guard jev on" in out, out
 assert json.loads((home / ".claude" / "settings.json").read_text())["statusLine"]["command"].endswith("statusline.py")
+assert "export PATH" in out, out  # ~/.local/bin is not on PATH in this test
 run("uninstall")
 assert json.loads((home / ".claude" / "settings.json").read_text()) == {}
+
+# Something else already at ~/.local/bin/session-guard: left alone. --purge deletes our files, never the clone.
+home = Path(tempfile.mkdtemp())
+(home / ".local" / "bin").mkdir(parents=True)
+(home / ".local" / "bin" / "session-guard").write_text("mine")
+assert "skipped" in run() and (home / ".local" / "bin" / "session-guard").read_text() == "mine"
+run("uninstall")
+assert (home / ".local" / "bin" / "session-guard").read_text() == "mine"
+(home / ".local" / "bin" / "session-guard").unlink()
+run()
+out = run("uninstall", "--purge")
+assert not (home / ".claude" / "session-guard").exists() and Path("install.py").exists(), out
+
+# cli: .env editing keeps other lines and is owner-only; jev on/off; unknown command fails.
+import cli  # noqa: E402
+cli.HERE = Path(tempfile.mkdtemp())
+(cli.HERE / ".env").write_text("# keep me\nOTHER=1\nSESSION_GUARD_JEV=0\n")
+cli.main(["jev", "on", "--key", "abc"])
+env_text = (cli.HERE / ".env").read_text()
+assert env_text == "# keep me\nOTHER=1\nSESSION_GUARD_JEV=1\nTYPESAFE_API_KEY=abc\n", env_text
+assert (cli.HERE / ".env").stat().st_mode & 0o777 == 0o600
+cli.main(["jev", "off"])
+assert "SESSION_GUARD_JEV=0" in (cli.HERE / ".env").read_text() and "TYPESAFE_API_KEY=abc" in (cli.HERE / ".env").read_text()
+# Interactive: it asks for the key and saves what was typed; Enter alone keeps the saved key.
+real_stdin, real_getpass = sys.stdin, cli.getpass.getpass
+sys.stdin = type("Tty", (), {"isatty": lambda self: True})()
+cli.getpass.getpass = lambda prompt: "typed-key"
+cli.main(["jev", "on"])
+assert "TYPESAFE_API_KEY=typed-key" in (cli.HERE / ".env").read_text() and "SESSION_GUARD_JEV=1" in (cli.HERE / ".env").read_text()
+cli.getpass.getpass = lambda prompt: ""
+os.environ["TYPESAFE_API_KEY"] = "typed-key"
+cli.main(["jev", "on"])
+assert "TYPESAFE_API_KEY=typed-key" in (cli.HERE / ".env").read_text()
+sys.stdin, cli.getpass.getpass = real_stdin, real_getpass
+for k in ("TYPESAFE_API_KEY", "SESSION_GUARD_JEV"):
+    os.environ.pop(k, None)  # load_env put them there
+try:
+    cli.main(["nonsense"])
+    raise AssertionError("unknown command should exit")
+except SystemExit as e:
+    assert e.code == 2
 
 print("all good")

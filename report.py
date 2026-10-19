@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Session stats for the last 30 days, before and after session-guard.
 
-    python3 report.py before    # run once, BEFORE installing: last 30 days -> before.json
-    python3 report.py after     # 30 days later: days since 'before' -> after.json + comparison
-    python3 report.py compare   # show the comparison again
+    session-guard report before    # last 30 days -> before.json (installing does this for you)
+    session-guard report after     # 30 days later: days since 'before' -> after.json + comparison
+    session-guard report compare   # show the comparison again
 
 Reads Claude Code transcripts (~/.claude/projects) and GitHub Copilot CLI
 sessions (~/.copilot/session-state). Uses only token counts, model names,
@@ -15,6 +15,7 @@ from __future__ import annotations  # Python 3.9 (macOS default) support
 
 import argparse
 import json
+import shutil
 import statistics
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
@@ -238,22 +239,40 @@ def compare(a: dict, b: dict) -> None:
     print("  compare; totals depend on how much work you did in each period.")
 
 
+def data_files() -> tuple:
+    """(before.json, after.json) in the state folder. Older versions kept them next to this script: copy those over."""
+    guard.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    files = guard.STATE_DIR / "before.json", guard.STATE_DIR / "after.json"
+    for new in files:
+        if (HERE / new.name).exists() and not new.exists():
+            shutil.copy2(HERE / new.name, new)
+    return files
+
+
+def save_before(days: int = 30) -> dict:
+    """Save the last `days` days as the 'before' baseline and return it."""
+    today = date.today()
+    r = analyse(today - timedelta(days=days - 1), today)
+    data_files()[0].write_text(json.dumps(r, indent=2))
+    return r
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(prog="session-guard report", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("step", choices=["before", "after", "compare"])
     ap.add_argument("--days", type=int, default=30, help="how many days 'before' looks back (default 30)")
     args = ap.parse_args()
-    before_file, after_file = HERE / "before.json", HERE / "after.json"
+    before_file, after_file = data_files()
     today = date.today()
 
     if args.step == "before":
-        r = analyse(today - timedelta(days=args.days - 1), today)
-        before_file.write_text(json.dumps(r, indent=2))
+        r = save_before(args.days)
         show(r)
-        print(f"\n  saved {before_file.name}. Now install session-guard; run 'report.py after' in ~30 days.")
+        print("\n  saved the baseline. Use session-guard for ~30 days, then run 'session-guard report after'.")
     elif args.step == "after":
         if not before_file.exists():
-            raise SystemExit("Run 'report.py before' first.")
+            raise SystemExit("Run 'session-guard report before' first.")
         before = json.loads(before_file.read_text())
         since = date.fromisoformat(before["until"]) + timedelta(days=1)  # never overlaps 'before'
         if since > today:
