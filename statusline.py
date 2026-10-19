@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Claude Code status line: live session cost meter.
 
-    💸 172k ctx ▰▰▱▱ · $4.61 (agents $0.67) · last msg $0.28 · 🧭 same task · /handover soon
+    💸 172k ctx · ▰▰▰▰▰▰▰▰▱▱ 86% · ~4 msgs to 180k · $4.61 (agents $0.67) · last msg $0.28 · 🧭 same task · /handover now
+
+Colours and layout come from the theme: session-guard theme.
 
 Any arguments are run as another status line command first (its output is
 kept above ours), so an existing status line keeps working:
@@ -12,42 +14,65 @@ kept above ours), so an existing status line keeps working:
 from __future__ import annotations  # Python 3.9 (macOS default) support
 
 import json
+import math
 import os
 import subprocess
 import sys
+from itertools import groupby
 from pathlib import Path
 
 import guard
+import ui
 
-GREEN, YELLOW, RED, DIM, RESET = "\033[38;5;108m", "\033[38;5;179m", "\033[38;5;167m", "\033[2m", "\033[0m"
+
+def eta(session: dict, ctx: int, lvls: list) -> str:
+    """Text like ~12 msgs to 160k: tokens to the next level / average growth per prompt. Empty if unknown."""
+    pc = session.get("prompt_ctx") or []
+    growth = [b - a for a, b in zip(pc, pc[1:]) if b >= a]  # a drop is /compact: not growth
+    nxt = [lvl for lvl in lvls if lvl > ctx]
+    if not growth or not nxt or sum(growth) <= 0:
+        return ""
+    n = math.ceil((nxt[0] - ctx) / (sum(growth) / len(growth)))
+    return f"~{n if n <= 99 else '99+'} {'msg' if n == 1 else 'msgs'} to {nxt[0] // 1000}k"
 
 
-def render(session: dict, state: dict) -> str:
+def render(session: dict, state: dict, theme: dict | None = None) -> str:
     ctx = session["context"]
     if not ctx:
         return ""
-    lvls = guard.levels(guard.window_for(session, state))
-    reached = sum(ctx >= lvl for lvl in lvls)  # 0..3
-    color = [GREEN, YELLOW, YELLOW, RED][min(reached, 3)]
-    bar = "▰" * reached + "▱" * (len(lvls) - reached)
-    parts = [
-        f"{color}💸 {ctx / 1000:.0f}k ctx {bar}{RESET}",
-        f"${session['total']:.2f}" + (f" (agents ${session['agents']:.2f})" if session.get("agents", 0) >= 0.005 else ""),
-        f"last msg ${session['last_msg']:.2f}",
-    ]
+    theme = theme or ui.load()
+    paint = lambda text, role: ui.paint(text, role, theme)
+    emoji = lambda e: e + " " if theme["emoji"] else ""
+    window = guard.window_for(session, state)
+    lvls = guard.levels(window)
+    reached = sum(ctx >= lvl for lvl in lvls)
+    # Below level 1 ok, up to level 2 warn, beyond that danger.
+    zone = lambda tokens: ("ok", "warn", "danger")[sum(tokens >= lvl for lvl in lvls[:2])]
+    filled_char, empty_char = ui.BARS[theme["bar"]]
+    width = theme["bar_width"]
+    filled = min(width, math.ceil(ctx / window * width))
+    cells = "".join(paint(filled_char * len(list(run)), z)  # one escape per run of same-zone cells
+                    for z, run in groupby(zone(i / width * window) for i in range(filled)))
+    seg = {
+        "ctx": paint(f"{emoji('💸')}{ctx / 1000:.0f}k ctx", zone(ctx)),
+        "bar": cells + paint(empty_char * (width - filled), "dim") + " " + paint(f"{ctx / window:.0%}", zone(ctx)),
+        "eta": eta(session, ctx, lvls),
+        "cost": f"${session['total']:.2f}" + (f" (agents ${session['agents']:.2f})" if session.get("agents", 0) >= 0.005 else ""),
+        "last": f"last msg ${session['last_msg']:.2f}",
+        "jev": "",
+        "hint": paint("/handover soon", "warn") if reached == 1 else paint("/handover now", "danger") if reached > 1 else "",
+    }
     jev = state.get("jev")
     if jev is not None:
         if jev >= guard.JEV_THRESHOLD:
-            parts.append(f"{RED}🧭 new task? {jev:.0%}{RESET}")
+            seg["jev"] = paint(f"{emoji('🧭')}new task? {jev:.0%}", "danger")
         elif jev >= 0.4:
-            parts.append(f"{YELLOW}🧭 unsure {jev:.0%}{RESET}")
+            seg["jev"] = paint(f"{emoji('🧭')}unsure {jev:.0%}", "warn")
         else:
-            parts.append(f"{GREEN}🧭 same task{RESET}")
-    if reached == 1:
-        parts.append(f"{YELLOW}/handover soon{RESET}")
-    elif reached > 1:
-        parts.append(f"{RED}/handover now{RESET}")
-    return f" {DIM}·{RESET} ".join(parts)
+            seg["jev"] = paint(f"{emoji('🧭')}same task", "ok")
+    sep = paint(" · ", "dim")
+    lines = (sep.join(seg[name] for name in names if seg[name]) for names in theme["segments"])
+    return "\n".join(line for line in lines if line)
 
 
 def main() -> None:

@@ -118,9 +118,11 @@ def install() -> None:
     for src in sorted((HERE / "commands").glob("*.md")):
         dst = CLAUDE / "commands" / src.name
         if dst.exists() and dst.read_bytes() != src.read_bytes():
-            print(f"  skipped {dst}: you already have a different one")
-        else:
-            shutil.copyfile(src, dst)
+            # An older version of ours or your own edit: replace it, but keep the old one (Claude Code ignores .bak).
+            backup = dst.with_name(f"{dst.name}.{time.strftime('%Y%m%d-%H%M%S')}.bak")
+            shutil.copy2(dst, backup)
+            print(f"  updated {dst}; the old one is saved as {backup.name}")
+        shutil.copyfile(src, dst)
 
     baseline()
     print(f"""session-guard is installed. Restart Claude Code to load it.

@@ -12,12 +12,21 @@
     session-guard repos                    every git repo under this folder
     session-guard jev on                   turn the new-task check on; it asks for your TypeSafe key
     session-guard jev off                  turn it off
+    session-guard theme                    pick the look with the arrow keys (needs a terminal)
+    session-guard theme show               print the theme and a preview
+    session-guard theme list               every preset, previewed
+    session-guard theme use <preset>       default | ocean | mono | high-contrast | colorblind
+    session-guard theme set <key>=<value>  ok|warn|danger|dim=#rrggbb, bar, bar_width, emoji=on|off, mode,
+                                           segments=ctx,bar|cost (| starts a new line)
+    session-guard theme reset              back to the defaults
+    session-guard theme apply '<json>'     set the whole theme from JSON
     session-guard test                     run the self-checks
 """
 
 from __future__ import annotations  # Python 3.9 (macOS default) support
 
 import getpass
+import json
 import os
 import subprocess
 import sys
@@ -28,6 +37,8 @@ sys.path.insert(0, str(HERE))  # cli.py is symlinked into ~/.local/bin
 
 import guard  # noqa: E402
 import install  # noqa: E402
+import themepicker  # noqa: E402
+import ui  # noqa: E402
 
 INSTALL_URL = "https://raw.githubusercontent.com/Swanand58/session-guard/main/install.sh"
 
@@ -64,6 +75,105 @@ def jev(args: list) -> None:
         set_env(env, TYPESAFE_API_KEY=key, SESSION_GUARD_JEV="1")
         print("Jev new-task check is on. It sends your last 5 prompts (truncated) to TypeSafe's API"
               " when a session is big. Check your company's policy first.")
+    else:
+        sys.exit(__doc__)
+
+
+def preview(theme: dict, only: int | None = None) -> None:
+    for line in themepicker.preview_lines(theme, only):
+        print("  " + line)
+
+
+def save_theme(raw: dict) -> None:
+    path = ui.theme_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(raw, indent=2) + "\n")
+    os.replace(tmp, path)  # atomic: the status line never reads half a file
+
+
+def store(raw: dict) -> None:
+    """Validate and save a theme. A bad theme exits with the reason and leaves the file alone."""
+    clean, error = ui.validate(raw)
+    if error:
+        sys.exit(f"Not saved. {error}")
+    save_theme(clean)
+
+
+def change(raw: dict) -> None:
+    store(raw)
+    show()
+
+
+def pick() -> None:
+    """The picker, if there is a terminal for it; otherwise the plain view."""
+    if not (themepicker.AVAILABLE and sys.stdin.isatty() and sys.stdout.isatty()):
+        show()
+        print("\nThe picker needs a terminal. Use: session-guard theme use <preset> / theme set key=value.")
+        return
+    new = themepicker.run(ui.load_raw())
+    if new is None:
+        print("Nothing changed.")
+    else:
+        store(new)
+        print("Saved. Your status line updates on the next message.")
+
+
+def show() -> None:
+    raw = ui.load_raw()
+    theme = ui.effective(raw)
+    print(f"Theme file: {ui.theme_file()}{'' if ui.theme_file().exists() else ' (none yet, using defaults)'}\n")
+    print(f"  preset    {theme['preset']}")
+    for role in ui.ROLES:
+        print(f"  {role:<9} {ui.paint('██', role, theme)} {theme['colors'][role]}")
+    print(f"  bar       {theme['bar']}, {theme['bar_width']} wide")
+    print(f"  emoji     {'on' if theme['emoji'] else 'off'}")
+    print(f"  mode      {theme['mode']}")
+    print(f"  segments  {' | '.join(', '.join(line) for line in theme['segments'])}")
+    print("\nPreview (14%, 65% and 85% of a 1M window):")
+    preview(theme)
+
+
+def theme(args: list) -> None:
+    if not args:
+        return pick()
+    cmd, rest = args[0], args[1:]
+    raw = ui.load_raw()
+    if cmd == "show":
+        show()
+    elif cmd == "list":
+        for name in ui.PRESETS:
+            print(name)
+            preview(ui.effective({"preset": name}), only=2)
+    elif cmd == "use" and len(rest) == 1:
+        change({**{k: v for k, v in raw.items() if k != "colors"}, "preset": rest[0]})  # your own colours would hide the preset
+    elif cmd == "set" and rest:
+        new = dict(raw)
+        for pair in rest:
+            key, sep, value = pair.partition("=")
+            key = key.strip()
+            if not sep or key not in (*ui.ROLES, "bar", "bar_width", "emoji", "mode", "segments"):
+                sys.exit(f"Not saved. Use key=value, with key one of: {', '.join((*ui.ROLES, 'bar', 'bar_width', 'emoji', 'mode', 'segments'))}")
+            if key in ui.ROLES:
+                new["colors"] = {**new.get("colors", {}), key: value}
+            elif key == "bar_width":
+                new[key] = int(value) if value.strip().lstrip("-").isdigit() else value
+            elif key == "emoji":
+                new[key] = {"on": True, "off": False}.get(value.strip().lower(), value)
+            elif key == "segments":
+                new[key] = [[n.strip() for n in line.split(",") if n.strip()] for line in value.split("|")]
+            else:
+                new[key] = value.strip()
+        change(new)
+    elif cmd == "reset" and not rest:
+        ui.theme_file().unlink(missing_ok=True)
+        show()
+    elif cmd == "apply" and len(rest) == 1:
+        try:
+            data = json.loads(rest[0])
+        except ValueError as e:
+            sys.exit(f"Not saved. That is not valid JSON: {e}")
+        change(data)
     else:
         sys.exit(__doc__)
 
@@ -123,6 +233,8 @@ def main(argv: list | None = None) -> None:
         recall.main()
     elif cmd == "jev":
         jev(rest)
+    elif cmd == "theme":
+        theme(rest)
     elif cmd == "test":
         sys.exit(subprocess.call([sys.executable, str(HERE / "test_guard.py")], cwd=HERE))
     else:
