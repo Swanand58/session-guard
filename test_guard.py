@@ -548,6 +548,31 @@ for flag in ("version", "--version"):
     assert r.returncode == 0 and r.stdout == f"session-guard {cli.VERSION}\n", r
 assert vcli("status").stdout.startswith(f"session-guard {cli.VERSION} in "), vcli("status").stdout
 assert f"## [{cli.VERSION}]" in Path("CHANGELOG.md").read_text(encoding="utf-8")
+# The VERSION file is the one source: cli.py reads it, the release workflow reads it. A missing file does not break the command.
+assert Path("VERSION").read_text(encoding="utf-8") == cli.VERSION + "\n", "VERSION must be one line"
+assert (cli._version.__doc__ or "").startswith("The text of the VERSION file")
+_here = cli.HERE
+cli.HERE = Path(tempfile.mkdtemp())
+assert cli._version() == "unknown"  # no VERSION file: fail open
+(cli.HERE / "VERSION").write_text("  1.2.3-rc1 \n")
+assert cli._version() == "1.2.3-rc1"
+cli.HERE = _here
+
+# The release workflow takes its notes from CHANGELOG.md with .github/scripts/release-notes.sh.
+import shutil  # noqa: E402
+if shutil.which("sh") and shutil.which("awk"):
+    notes = lambda v, text: subprocess.run(["sh", ".github/scripts/release-notes.sh", v, str(text)], capture_output=True, text=True).stdout
+    cl = Path(tempfile.mkdtemp()) / "CHANGELOG.md"
+    cl.write_text("# Changelog\n\n## [Unreleased]\n- later\n\n## [0.2.0] - 2026-11-01\n### Added\n- b\n\n## [0.1.0]\n- a\n- a2\n")
+    assert notes("0.2.0", cl) == "### Added\n- b\n\n", notes("0.2.0", cl)  # stops at the next heading; a date after the version is fine
+    assert notes("0.1.0", cl) == "- a\n- a2\n"  # last section runs to the end of the file
+    assert notes("0.3.0", cl) == "" and notes("0.2", cl) == "" and notes("0.1.0-rc1", cl) == ""  # unknown or partial version: nothing
+    assert notes(cli.VERSION, "CHANGELOG.md").strip(), "CHANGELOG.md needs notes for the current VERSION"
+# The workflow itself: triggers on main, reads VERSION, is idempotent (skips when the tag exists), only for this repo.
+wf = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+assert "branches: [main]" in wf and "tr -d '[:space:]' < VERSION" in wf and "refs/tags/v$version" in wf, wf
+assert "gh release create" in wf and "--target \"$GITHUB_SHA\"" in wf and "--notes-file notes.md" in wf, wf
+assert "github.repository == 'Swanand58/session-guard'" in wf and "tags:" not in wf, wf
 
 # install.sh, offline: a fake curl answers the release lookup and serves a tarball of this working tree
 # (one top-level folder, as GitHub does). Checks the ref it picks, that SESSION_GUARD_REF skips the lookup,

@@ -1,30 +1,61 @@
 name: release
+# Publishes a release when the VERSION file names a version that has no tag yet.
+# To release: change VERSION and add a CHANGELOG.md entry in a pull request, then merge it.
+# Nothing happens when the tag already exists, so ordinary merges do not release anything.
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+  workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: release
+  cancel-in-progress: false
 jobs:
   release:
+    if: github.repository == 'Swanand58/session-guard'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
-      - name: Check the tag matches VERSION in cli.py
+          fetch-depth: 0
+      - name: Read VERSION
+        id: v
         run: |
-          version=$(sed -n 's/^VERSION = "\(.*\)".*/\1/p' cli.py)
-          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match VERSION \"$version\" in cli.py. Fix VERSION and CHANGELOG.md, then tag again."
+          version=$(tr -d '[:space:]' < VERSION)
+          if ! printf '%s' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::VERSION must look like 1.2.3 or 1.2.3-rc1, but it is '$version'."
             exit 1
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$version" > /dev/null; then
+            echo "Tag v$version already exists: nothing to release."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-python@v5
+        if: steps.v.outputs.exists != 'true'
+        with:
+          python-version: "3.x"
+      - name: Release notes from CHANGELOG.md
+        if: steps.v.outputs.exists != 'true'
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          .github/scripts/release-notes.sh "$VERSION" > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section (or it is empty). Add one and merge again."
+            exit 1
+          fi
+          printf '\nInstall: `curl -fsSL https://raw.githubusercontent.com/Swanand58/session-guard/main/install.sh | bash`\n' >> notes.md
       - name: Tests
+        if: steps.v.outputs.exists != 'true'
         run: python3 test_guard.py
-      - name: Create the release
+      - name: Create the tag and the release
+        if: steps.v.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.v.outputs.version }}
         run: |
           flags=""
-          case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac  # v0.2.0-rc1 is a pre-release
-          gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag --title "$GITHUB_REF_NAME" $flags
+          case "$VERSION" in *-*) flags="--prerelease" ;; esac  # 0.2.0-rc1 is a pre-release
+          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --notes-file notes.md $flags
