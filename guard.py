@@ -20,6 +20,7 @@ import os
 import sys
 import time
 import urllib.request
+from collections import deque
 from pathlib import Path
 
 # Warn at these shares of the context window, once each per session. Override: SESSION_GUARD_LEVELS="0.8,0.9,0.95".
@@ -170,15 +171,20 @@ def read_session(transcript: Path) -> dict:
     """Context size of the latest call, cost so far, cost of the last message, user prompts.
 
     Costs include subagents ("agents" is their part). Context does not: a subagent has its own.
+    "history" is the context after each of the last 40 main-session calls; "prompt_ctx" the context
+    at the end of each of the last 6 user prompts.
     """
     seen = set()
     total = last_msg = agents = 0.0
     context = peak = 0
     prompts = []
+    history, prompt_ctx = deque(maxlen=40), deque(maxlen=6)
     last_prompt_at = ""
     for e in entries(transcript):
         text = prompt_text(e)
         if text:
+            if prompts and context:
+                prompt_ctx.append(context)  # where the previous prompt ended
             prompts.append(text)
             last_msg = 0.0
             last_prompt_at = str(e.get("timestamp") or "")
@@ -191,8 +197,11 @@ def read_session(transcript: Path) -> dict:
         else:
             context = call[0]
             peak = max(peak, context)
+            history.append(context)
         total += call[1]
         last_msg += call[1]
+    if prompts and context:
+        prompt_ctx.append(context)
     # Newer Claude Code: one file per subagent, in <session>/subagents/ next to the transcript.
     for f in (transcript.with_suffix("") / "subagents").glob("*.jsonl"):
         for e in entries(f):
@@ -203,7 +212,8 @@ def read_session(transcript: Path) -> dict:
             total += call[1]
             if last_prompt_at and str(e.get("timestamp") or "") >= last_prompt_at:  # ISO times sort as text
                 last_msg += call[1]
-    return {"context": context, "total": total, "last_msg": last_msg, "agents": agents, "prompts": prompts, "peak": peak}
+    return {"context": context, "total": total, "last_msg": last_msg, "agents": agents, "prompts": prompts, "peak": peak,
+            "history": list(history), "prompt_ctx": list(prompt_ctx)}
 
 
 def read_agent(transcript: Path) -> dict:

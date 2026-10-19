@@ -165,17 +165,26 @@ state = {"warned": 500_000}
 guard.decide({"prompt": "q"}, sess(90_000), state, jev=same_task)
 assert state["jev"] == 0.1
 
-# Status line.
-import statusline  # noqa: E402
+# Status line. Colours are forced on (and the theme is the default one, not the real file) so the checks are the same everywhere.
+import re  # noqa: E402
 
-assert statusline.render(sess(0), {}) == ""  # nothing before the first reply
-line = statusline.render(sess(150_000), {"jev": 0.1})
+import statusline  # noqa: E402
+import ui  # noqa: E402
+
+os.environ.pop("NO_COLOR", None)
+os.environ["COLORTERM"] = "truecolor"
+T = ui.effective({})
+rd = lambda session, state, theme=T: statusline.render(session, state, theme)
+plain = lambda text: re.sub(r"\033\[[0-9;]*m", "", text)
+
+assert rd(sess(0), {}) == ""  # nothing before the first reply
+line = rd(sess(150_000), {"jev": 0.1})
 assert "150k ctx" in line and "same task" in line and "/handover soon" in line, line
-line = statusline.render(sess(190_000), {"jev": 0.93})
+line = rd(sess(190_000), {"jev": 0.93})
 assert "new task? 93%" in line and "/handover now" in line, line
-assert "/handover" not in statusline.render(sess(40_000), {})
-assert "agents" not in line and "$1.00 (agents $0.25)" in statusline.render({**sess(150_000), "agents": 0.25}, {})
-assert "/handover" not in statusline.render(sess(310_000), {"window": 1_000_000})  # 31% of a 1M window: quiet
+assert "/handover" not in rd(sess(40_000), {})
+assert "agents" not in line and "$1.00 (agents $0.25)" in rd({**sess(150_000), "agents": 0.25}, {})
+assert "/handover" not in rd(sess(310_000), {"window": 1_000_000})  # 31% of a 1M window: quiet
 # Status line saves the window to the session's state file without dropping other keys.
 sl_home = Path(tempfile.mkdtemp())
 (sl_home / ".claude" / "session-guard").mkdir(parents=True)
@@ -188,6 +197,109 @@ assert saved == {"warned": 120_000, "jev": 0.3, "window": 1_000_000}, saved
 subprocess.run([sys.executable, "guard.py"], capture_output=True, text=True, env={**os.environ, "HOME": str(sl_home)},
                input=json.dumps({"session_id": "s", "transcript_path": str(t2), "hook_event_name": "UserPromptSubmit", "prompt": "hi"}))
 assert json.loads((sl_home / ".claude" / "session-guard" / "s.json").read_text())["window"] == 1_000_000
+
+# read_session keeps its old keys and adds history (last 40 main-session calls) and prompt_ctx (last 6 prompt ends).
+t3 = transcript([prompt("a"), call("a", 100_000), call("b", 110_000), prompt("b"), call("c", 150_000),
+                 {**call("side", 999_000), "isSidechain": True}, prompt("c"), call("d", 90_000)])
+s3 = guard.read_session(t3)
+assert s3["history"] == [100_000, 110_000, 150_000, 90_000], s3  # subagent call left out
+assert s3["prompt_ctx"] == [110_000, 150_000, 90_000], s3
+assert s3["context"] == 90_000 and s3["peak"] == 150_000 and len(s3["prompts"]) == 3
+many = guard.read_session(transcript([x for i in range(10) for x in (prompt(f"p{i}"), call(f"m{i}", 1000 * (i + 1)))]))
+assert many["prompt_ctx"] == [5000, 6000, 7000, 8000, 9000, 10000], many
+many = guard.read_session(transcript([prompt("p")] + [call(f"h{i}", 1000 * (i + 1)) for i in range(50)]))
+assert many["history"] == [1000 * (i + 1) for i in range(10, 50)] and many["prompt_ctx"] == [50_000], many
+assert guard.read_session(transcript([prompt("only")]))["prompt_ctx"] == []  # no reply yet
+
+# Colours: hex -> xterm-256, truecolor escape, NO_COLOR, mode detection.
+assert ui.to256("#87af87") == 108 and ui.to256("#000000") == 16 and ui.to256("#ffffff") == 231
+assert ui.to256("#808080") == 244 and ui.to256("#d75f5f") == 167  # grey ramp, cube
+assert ui.paint("x", "ok", T) == "\033[38;2;135;175;135mx\033[0m"
+os.environ["COLORTERM"] = "24bit"
+assert ui.paint("x", "ok", T).startswith("\033[38;2;")
+for term in (None, "xterm"):  # auto without truecolor -> 256
+    os.environ.pop("COLORTERM", None) if term is None else os.environ.update(COLORTERM=term)
+    assert ui.paint("x", "ok", T) == "\033[38;5;108mx\033[0m", term
+assert ui.paint("x", "ok", {**T, "mode": "truecolor"}).startswith("\033[38;2;")  # forced
+os.environ["COLORTERM"] = "truecolor"
+assert ui.paint("x", "ok", {**T, "mode": "256"}) == "\033[38;5;108mx\033[0m"
+os.environ["NO_COLOR"] = "1"
+assert ui.paint("x", "ok", T) == "x" and "\033" not in rd(sess(150_000), {"jev": 0.1})
+os.environ["NO_COLOR"] = ""  # set but empty: colours stay
+assert ui.paint("x", "ok", T).startswith("\033[")
+del os.environ["NO_COLOR"]
+
+# Theme file: defaults, unreadable file, bad parts fall back one by one, preset < explicit colours.
+real_dir, guard.STATE_DIR = guard.STATE_DIR, Path(tempfile.mkdtemp())
+try:
+    assert ui.load() == ui.effective({}) and ui.load()["colors"] == ui.PRESETS["default"]
+    for junk in ("not json", "[1, 2]", "", '{"colors": 5}'):
+        ui.theme_file().write_text(junk)
+        assert ui.load() == ui.effective({}), junk
+    ui.theme_file().write_text(json.dumps({"preset": "ocean", "colors": {"warn": "112233", "danger": "nope", "x": "#000000"},
+                                           "bar": "wide", "bar_width": 99, "emoji": "yes", "segments": [["cost", "bogus"]], "mode": "256"}))
+    th = ui.load()
+    assert th["preset"] == "ocean" and th["colors"]["ok"] == ui.PRESETS["ocean"]["ok"], th
+    assert th["colors"]["warn"] == "#112233" and th["colors"]["danger"] == ui.PRESETS["ocean"]["danger"], th
+    assert (th["bar"], th["bar_width"], th["emoji"], th["mode"]) == ("blocks", 10, True, "256"), th
+    assert th["segments"] == [list(ui.SEGMENTS)], th
+finally:
+    guard.STATE_DIR = real_dir
+assert all(ui.validate({"colors": c})[1] is None for c in ui.PRESETS.values()) and set(ui.PRESETS) >= {"colorblind", "high-contrast"}
+clean, err = ui.validate({"colors": {"ok": "AABBCC"}, "bar_width": 8, "emoji": False})
+assert err is None and clean == {"colors": {"ok": "#aabbcc"}, "bar_width": 8, "emoji": False}, (clean, err)
+for bad, words in (({"colors": {"ok": "red"}}, "#rrggbb"), ({"colors": {"bad": "#000000"}}, "ok, warn, danger, dim"),
+                   ({"segments": [["ctx", "nope"]]}, "ctx, bar, spark"), ({"bar": "wide"}, "blocks, solid, dots"),
+                   ({"bar_width": 3}, "4 to 20"), ({"bar_width": True}, "4 to 20"), ({"emoji": "yes"}, "on or off"),
+                   ({"mode": "8bit"}, "auto, truecolor, 256"), ({"preset": "x"}, "colorblind"), ({"segments": []}, "ctx"),
+                   ({"nope": 1}, "valid keys"), ([], "JSON object")):
+    out, err = ui.validate(bad)
+    assert out == {} and err and words in err, (bad, err)
+
+# Sparkline.
+assert ui.spark([]) == ui.spark([5]) == "" and ui.spark([5, 5, 5]) == "▁▁▁"
+assert ui.spark(list(range(8))) == "▁▂▃▄▅▆▇█" and ui.spark([10, 0]) == "█▁"
+
+# Bar: filled cells take the colour of the zone they sit in; the percent takes the zone of the fill.
+paint = lambda text, role: ui.paint(text, role, T)
+big = lambda ctx, **kw: rd({**sess(ctx), **kw}, {"window": 1_000_000})
+assert plain(big(140_000)).count("▰▰▱▱▱▱▱▱▱▱ 14%") == 1
+assert paint("▰▰", "ok") + paint("▱" * 8, "dim") + " " + paint("14%", "ok") in big(140_000)
+assert paint("▰" * 6, "ok") + paint("▰", "warn") + paint("▱" * 3, "dim") + " " + paint("65%", "warn") in big(650_000)
+assert paint("▰" * 6, "ok") + paint("▰▰", "warn") + paint("▰", "danger") + paint("▱", "dim") + " " + paint("85%", "danger") in big(850_000)
+assert paint("💸 850k ctx", "danger") in big(850_000) and paint("💸 140k ctx", "ok") in big(140_000)
+wide = ui.effective({"bar": "solid", "bar_width": 4, "segments": [["bar"]]})
+assert plain(rd(sess(100_000), {}, wide)) == "██░░ 50%", plain(rd(sess(100_000), {}, wide))  # 100k of 200k
+assert plain(rd(sess(100_000), {}, {**wide, "bar": "dots"})) == "●●○○ 50%"
+
+# Spark segment: the last 8 calls.
+only = lambda *names, **kw: ui.effective({"segments": [list(names)], **kw})
+assert plain(rd({**sess(150_000), "history": list(range(20))}, {}, only("spark"))) == "▁▂▃▄▅▆▇█"
+assert rd(sess(150_000), {}, only("spark")) == ""  # no history -> nothing
+
+# ETA: tokens to the next level / mean growth per prompt; /compact drops are ignored; hidden when unknown.
+eta = lambda ctx, prompt_ctx, **kw: plain(rd({**sess(ctx), "prompt_ctx": prompt_ctx}, kw.get("state", {}), only("eta")))
+assert eta(40_000, [10_000, 20_000, 30_000, 40_000]) == "~8 msgs to 120k"
+assert eta(30_000, [100_000, 130_000, 20_000, 30_000]) == "~5 msgs to 120k"  # growth 30k, (drop), 10k -> mean 20k
+assert eta(130_000, [110_000, 120_000, 130_000]) == "~3 msgs to 160k"  # next level not yet reached
+assert eta(40_100, [40_000, 40_100]) == "~99+ msgs to 120k"  # capped
+assert eta(110_000, [100_000, 105_000, 110_000]) == "~2 msgs to 120k" and eta(115_000, [105_000, 110_000, 115_000]) == "~1 msg to 120k"
+assert eta(40_000, [40_000]) == "" and eta(40_000, []) == ""  # needs 2 prompts
+assert eta(40_000, [40_000, 40_000]) == "" and eta(10_000, [90_000, 10_000]) == ""  # no growth
+assert eta(190_000, [150_000, 170_000, 190_000]) == ""  # every level reached
+assert eta(40_000, [10_000, 20_000, 30_000, 40_000], state={"window": 1_000_000}) == "~56 msgs to 600k"
+
+# Emoji off; segments reorder, hide and split into lines; no stray separators.
+noemoji = ui.effective({"emoji": False})
+line = rd(sess(150_000), {"jev": 0.1}, noemoji)
+assert "💸" not in line and "🧭" not in line and "150k ctx" in line and "same task" in line, line
+assert plain(rd(sess(150_000), {}, only("cost", "ctx"))) == "$1.00 · 💸 150k ctx"
+assert plain(rd(sess(150_000), {}, ui.effective({"segments": [["ctx", "bar"], ["cost", "last"]]}))).split("\n")[1] == "$1.00 · last msg $0.10"
+assert plain(rd(sess(40_000), {}, only("eta", "cost", "hint"))) == "$1.00"  # hidden segments leave no " · "
+assert rd(sess(40_000), {}, only("eta", "hint")) == ""
+assert plain(rd(sess(40_000), {}, ui.effective({"segments": [["hint"], ["cost"]]}))) == "$1.00"  # empty line skipped
+full = plain(rd({**sess(150_000), "history": [1, 2, 3], "prompt_ctx": [100_000, 125_000, 150_000]}, {"jev": 0.1}))
+assert full == "💸 150k ctx · ▰▰▰▰▰▰▰▰▱▱ 75% · ▁▅█ · ~1 msg to 160k · $1.00 · last msg $0.10 · 🧭 same task · /handover soon", full
 
 # Prices: every model resolves to its own row (no shorter key shadows it), names are normalized,
 # long-context tiers apply above the threshold.
@@ -323,6 +435,14 @@ assert [h["command"] for g in s["hooks"]["PostToolUse"] for h in g["hooks"]] == 
 assert s["model"] == "opus" and s["statusLine"]["padding"] == 0, s
 assert s["statusLine"]["command"].endswith("statusline.py sh -c '~/my line.sh'"), s["statusLine"]
 assert (home / ".claude" / "commands" / "handover.md").exists()
+# An older or edited command file is replaced on install; the old one is kept as a timestamped .bak.
+mine = home / ".claude" / "commands" / "handover.md"
+mine.write_text("an older version")
+assert "updated" in run() and mine.read_bytes() == Path("commands/handover.md").read_bytes()
+baks = list((home / ".claude" / "commands").glob("handover.md.*.bak"))
+assert len(baks) == 1 and baks[0].read_text() == "an older version", baks
+run()
+assert len(list((home / ".claude" / "commands").glob("handover.md.*.bak"))) == 1  # unchanged file: no new backup
 assert (home / ".claude" / "session-guard" / "recall.py").resolve() == Path("recall.py").resolve()
 assert len(list((home / ".claude").glob("settings.json.*.bak"))) == 1  # second run changed nothing
 cmd = home / ".local" / "bin" / "session-guard"
@@ -385,5 +505,46 @@ try:
     raise AssertionError("unknown command should exit")
 except SystemExit as e:
     assert e.code == 2
+
+# theme command, against a temporary HOME: the real state folder is never touched.
+th_home = Path(tempfile.mkdtemp())
+th_file = th_home / ".claude" / "session-guard" / "theme.json"
+th_env = {k: v for k, v in os.environ.items() if k not in ("NO_COLOR", "COLORTERM")}
+th_cli = lambda *a: subprocess.run([sys.executable, "cli.py", "theme", *a], env={**th_env, "HOME": str(th_home), "COLORTERM": "truecolor"},
+                                   capture_output=True, text=True)
+saved = lambda: json.loads(th_file.read_text())
+r = th_cli()
+assert r.returncode == 0 and "preset    default" in r.stdout and "#87af87" in r.stdout and "38;2;135;175;135m" in r.stdout, r.stdout
+assert r.stdout.count("ctx") >= 3 and "14%" in r.stdout and "65%" in r.stdout and "85%" in r.stdout and not th_file.exists(), r.stdout
+r = th_cli("list")
+assert r.returncode == 0 and all(name in r.stdout for name in ui.PRESETS) and "38;2;204;121;167m" in r.stdout, r.stdout  # colorblind danger
+assert th_cli("use", "ocean").returncode == 0 and saved() == {"preset": "ocean"}
+r = th_cli("set", "ok=FF0000", "bar_width=6", "emoji=off", "dim=#123456")
+assert r.returncode == 0 and "#ff0000" in r.stdout, r.stdout
+assert saved() == {"preset": "ocean", "colors": {"ok": "#ff0000", "dim": "#123456"}, "bar_width": 6, "emoji": False}, saved()
+assert th_cli("set", "segments=ctx,bar,spark|cost,last").returncode == 0 and saved()["segments"] == [["ctx", "bar", "spark"], ["cost", "last"]]
+assert th_cli("set", "bar=dots", "mode=256").returncode == 0 and saved()["bar"] == "dots" and saved()["mode"] == "256"
+assert th_cli("use", "mono").returncode == 0 and "colors" not in saved() and saved()["preset"] == "mono"  # your colours would hide the preset
+before = th_file.read_text()
+for args, words in ((("set", "ok=red"), "#rrggbb"), (("set", "bar=wide"), "blocks, solid, dots"), (("set", "bar_width=30"), "4 to 20"),
+                    (("set", "bar_width=abc"), "4 to 20"), (("set", "emoji=maybe"), "on or off"), (("set", "segments=ctx,nope"), "ctx, bar, spark"),
+                    (("set", "mode=8bit"), "auto, truecolor, 256"), (("set", "color=#000000"), "ok, warn, danger, dim"),
+                    (("set", "ok"), "key=value"), (("use", "nope"), "colorblind"), (("apply", "{bad"), "valid JSON"),
+                    (("apply", '{"segments": [["x"]]}'), "ctx, bar, spark"), (("apply", '{"zzz": 1}'), "valid keys"), (("use",), "session-guard theme")):
+    r = th_cli(*args)
+    assert r.returncode != 0 and words in r.stderr and th_file.read_text() == before, (args, r.stderr)
+r = th_cli("apply", '{"preset": "colorblind", "bar": "solid", "colors": {"dim": "#abcdef"}, "segments": [["ctx"], ["cost"]]}')
+assert r.returncode == 0 and saved() == {"preset": "colorblind", "bar": "solid", "colors": {"dim": "#abcdef"}, "segments": [["ctx"], ["cost"]]}
+assert [f.name for f in th_file.parent.iterdir()] == ["theme.json"]  # atomic write leaves no temp file
+# The status line itself reads that file: two lines, truecolor; a broken file falls back to the defaults.
+sl_run = lambda **env: subprocess.run([sys.executable, "statusline.py"], capture_output=True, text=True, input=json.dumps(
+    {"session_id": "q", "transcript_path": str(t2)}), env={**th_env, "HOME": str(th_home), **env}).stdout
+out = sl_run(COLORTERM="truecolor")
+assert out.count("\n") == 2 and "38;2;" in out and "$" in out.split("\n")[1], repr(out)
+assert "38;5;" in sl_run() and "38;2;" not in sl_run()
+assert "\033" not in sl_run(NO_COLOR="1") and "50k ctx" in sl_run(NO_COLOR="1")
+th_file.write_text("{{{")
+assert "50k ctx" in sl_run() and sl_run().count("\n") == 1
+assert th_cli("reset").returncode == 0 and not th_file.exists() and th_cli("reset").returncode == 0
 
 print("all good")
