@@ -17,6 +17,24 @@ session-guard status     # check it worked, then restart Claude Code
 
 ![The theme studio on the session page: a live preview of the status line, colour pickers, presets, bar style and which segments to show.](docs/images/theme-studio.png)
 
+The page screenshots use an invented demo session.
+
+## In the terminal
+
+The status line at about 15%, 63% and 85% of a 1M window. The bar and the
+numbers change colour as the session fills up, and from the first level on it
+shows the biggest grab and a `/handover` hint. Here it is laid out on two lines
+so the image stays readable (`session-guard theme set 'segments=ctx,bar,eta,cost|last,grab,hint'`);
+by default it is one line.
+
+![Three status lines from a demo session. At 15% the numbers are green, at 63% amber with a top grab and "/handover soon", at 85% red with "/handover now".](docs/images/statusline.png)
+
+*Terminal images are rendered from the tool's real output on a demo session.*
+
+The warning you get once, when the context passes the first level (60% of the window), with what grew it:
+
+![The text of a warning at 600k tokens: cost so far, the biggest grabs as estimates, and the advice to run /handover, then /clear and /continue.](docs/images/warning.png)
+
 ## What it does
 
 Every message re-sends the whole session, so a long session costs more per
@@ -66,7 +84,8 @@ prints a warning when a level is passed.
   for the report, Copilot CLI session logs if you have them.
 - **It stores**, under `~/.claude/session-guard/`: a small state file per session
   (which levels it has warned at, the window size, the last new-task score), a
-  log of numbers only (`events.jsonl`), the report files, and the session pages.
+  log of numbers only (`events.jsonl`), the report files, and the session pages
+  (written when you run `session-guard view`, not by the status line).
   The pages hold only numbers, tool names and file base names (`report.py`, not
   the path), never your prompts, commands, file contents or URLs. `/handover`
   also writes a note into your project's `.handover/` folder; that note is
@@ -96,7 +115,11 @@ warning hook, a live cost meter in the status line, the `/handover` and
 `/continue` commands, and the `session-guard` command (a link in
 `~/.local/bin`). It also saves your last 30 days of costs as the "before"
 numbers for the [benchmark](#benchmark-before-vs-after). Restart Claude Code
-afterwards. Check it worked with `session-guard status`.
+afterwards. Check it worked with `session-guard status`:
+
+![The output of session-guard status after an install: the hooks, status line and commands show yes, with the levels where it warns and Jev off.](docs/images/cli-status.png)
+
+*Rendered from the tool's real output in a temporary home folder.*
 
 To install a particular version, set `SESSION_GUARD_REF` to a tag or a branch:
 
@@ -195,10 +218,14 @@ the top (14%, 65% and 85% of a 1M window) changes as you move.
 session-guard theme
 ```
 
+![The theme picker in a terminal: a live preview of three status lines, then the preset, the four colours, bar style, width, emoji and the list of segments to show.](docs/images/picker.png)
+
+*Rendered from the tool's real output on a demo session. Pressing Enter on a colour opens a palette, which also takes a typed hex colour.*
+
 | Key | What it does |
 |---|---|
 | `↑` `↓` (or `k` `j`) | Move between rows |
-| `←` `→` (or `h` `l`) | Change a value: preset, bar style, bar width, emoji, clickable `ctx` |
+| `←` `→` (or `h` `l`) | Change a value: preset, bar style, bar width, emoji |
 | `Enter` or `Space` | On a colour: open the palette. On a segment: show or hide it. On Save or Cancel: do it. |
 | `s` | Save |
 | `q` or `Esc` | Cancel. Nothing is saved. |
@@ -225,7 +252,6 @@ session-guard theme use ocean
 session-guard theme set warn=#ff9900          # one colour (the # is optional)
 session-guard theme set bar=solid bar_width=14
 session-guard theme set emoji=off
-session-guard theme set link=off              # ctx is no longer a link (see The session page)
 session-guard theme reset                     # back to the defaults
 ```
 
@@ -237,7 +263,6 @@ empty bar cells). Other settings:
 | `bar` | `blocks` (▰▱), `solid` (█░) or `dots` (●○) |
 | `bar_width` | 4 to 20 cells, default 10 |
 | `emoji` | `on` or `off` |
-| `link` | `on` (default) or `off`. When on, `ctx` opens [the session page](#the-session-page) in terminals that support links. It does not change the text. |
 | `mode` | `auto`, `truecolor` or `256`. `auto` uses 24-bit colour when `COLORTERM` is `truecolor` or `24bit`, else the nearest of 256 colours. |
 | `segments` | which parts to show, in which order (below) |
 
@@ -303,29 +328,19 @@ system). All text meets WCAG AAA contrast (7:1 or better). It shows:
   context are hidden behind "show all". A tick box adds the conversation
   itself (replies and your messages). Sizes are estimates; the total is exact.
 - **Theme studio**, folded away until you open "Theme" (or add `#theme` to the
-  address): colour pickers, presets, bar style and width, emoji, the
-  clickable `ctx`, and which segments to show, in which order, on how many
+  address): colour pickers, presets, bar style and width, emoji, and which
+  segments to show, in which order, on how many
   lines. A live preview of the status line uses your real numbers at the
   current fill and at 65% and 85%. **Copy command** gives you a
   `session-guard theme apply '...'` line. A plain file page cannot write your
   settings, so you paste that line in a terminal.
 
-**Clickable `ctx`.** With `link` on (the default), the `ctx` part of the status
-line is a link to this page. In a terminal that supports links (Ghostty, iTerm2,
-Kitty, WezTerm) hold Cmd (Ctrl on Linux) and click it. Terminal.app does not
-support them; use `session-guard view` there. The status line writes the page
-only when it is missing or older than the session, which added about 0.05
-seconds to an update on a 21 MB transcript. If anything goes wrong, you get the
-same status line without the link.
-
-**Private and offline.** The page is a local file. It loads nothing from the
-internet and sends nothing. It holds numbers, tool names and file base names
+**Private and offline.** The page is a local file, written only when you run
+`session-guard view`. It loads nothing from the internet and sends nothing. It holds numbers, tool names and file base names
 (`report.py`, not the path). It never holds your prompts, commands, file
 contents or URLs. The file is readable only by you, and `session-guard
 uninstall --purge` deletes it with the rest of the session-guard folder. The page
-is a snapshot: reload the tab after your next message, or run the command again.
-The page is rebuilt when the session, your theme or the page design is newer than
-the file, so an update brings the new design on its next status line refresh.
+is a snapshot: run `session-guard view` again for fresh numbers.
 
 ## What grew the context
 

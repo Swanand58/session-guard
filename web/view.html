@@ -164,7 +164,6 @@ details#studio > summary h2 { display: inline; }
 .term-body .cap { font-size: 13px; color: var(--term-muted); margin: 10px 0 1px; }
 .term-body .cap:first-child { margin-top: 0; }
 .term-body .ln { white-space: pre; width: max-content; min-width: 100%; }
-.term-body .ln u { text-decoration-style: dotted; text-underline-offset: 3px; }
 .term-body .none { color: var(--term-muted); }
 .form { margin-top: 14px; }
 .f { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 4px 16px; padding: 7px 0; align-items: center; }
@@ -284,7 +283,7 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line);
       <div class="f"><label for="f-bar">bar style</label><div><select id="f-bar"></select></div></div>
       <div class="f"><label for="f-width">bar width</label><div class="range"><input type="range" id="f-width" step="1"><output id="o-width" for="f-width"></output></div></div>
       <div class="f"><span class="fl">options</span><div>
-        <label class="chk"><input type="checkbox" id="f-emoji"> emoji</label><label class="chk"><input type="checkbox" id="f-link"> clickable <code>ctx</code> (opens this page)</label></div></div>
+        <label class="chk"><input type="checkbox" id="f-emoji"> emoji</label></div></div>
       <div class="f top"><span class="fl" id="l-segs">segments</span><div>
         <ul class="segs" id="segs" aria-labelledby="l-segs"></ul>
         <p class="sub">Tick to show. "break" starts a new line after that segment.</p></div></div>
@@ -302,7 +301,7 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line);
 </section>
 
 <footer>
-  <p class="sub">Snapshot of one session, rewritten when your status line next updates: reload the tab, or run <code>session-guard view</code>. A local file; it sends nothing anywhere.</p>
+  <p class="sub">Snapshot of one session. Run <code>session-guard view</code> again for fresh numbers. A local file; it sends nothing anywhere.</p>
 </footer>
 </div>
 
@@ -338,8 +337,8 @@ var Core = (function () {
   }
 
   /* ---- Port of statusline.render: the same text and colour roles for each segment ----
-     d: the page data. theme: {colors, bar, bar_width, emoji, link, segments}. ctx: tokens.
-     Returns lines; a line is a list of runs {t: text, role: ok|warn|danger|dim|null, link?: true}. Rounding of x.5 can differ by one
+     d: the page data. theme: {colors, bar, bar_width, emoji, segments}. ctx: tokens.
+     Returns lines; a line is a list of runs {t: text, role: ok|warn|danger|dim|null}. Rounding of x.5 can differ by one
      from Python's (half-even) in rare cases. */
   function statusLines(theme, d, ctx) {
     if (!ctx) return [];
@@ -350,7 +349,7 @@ var Core = (function () {
     var filled = Math.min(width, Math.ceil(ctx / window_ * width));
     var emoji = function (e) { return theme.emoji ? e + " " : ""; };
     var seg = {};
-    seg.ctx = [{ t: emoji("💸") + Math.round(ctx / 1000) + "k ctx", role: zone(ctx, lvls), link: !!theme.link }];
+    seg.ctx = [{ t: emoji("💸") + Math.round(ctx / 1000) + "k ctx", role: zone(ctx, lvls) }];
     var runs = [], i, z, last = null;
     for (i = 0; i < filled; i++) {  // one run per stretch of same-zone cells
       z = zone(i / width * window_, lvls);
@@ -399,7 +398,7 @@ var Core = (function () {
     });
     var colors = {};
     schema.roles.forEach(function (r) { colors[r] = theme.colors[r]; });
-    return { preset: theme.preset, colors: colors, bar: theme.bar, bar_width: theme.bar_width, emoji: theme.emoji, link: theme.link,
+    return { preset: theme.preset, colors: colors, bar: theme.bar, bar_width: theme.bar_width, emoji: theme.emoji,
       mode: theme.mode, order: order, shown: shown, breaks: breaks };
   }
   function linesOf(s) {
@@ -412,7 +411,7 @@ var Core = (function () {
     return lines;
   }
   function themeOf(s) {  // exactly what ui.validate accepts
-    return { preset: s.preset, colors: s.colors, bar: s.bar, bar_width: s.bar_width, emoji: s.emoji, link: s.link, mode: s.mode, segments: linesOf(s) };
+    return { preset: s.preset, colors: s.colors, bar: s.bar, bar_width: s.bar_width, emoji: s.emoji, mode: s.mode, segments: linesOf(s) };
   }
   function shellQuote(text) { return "'" + text.replace(/'/g, "'\\''") + "'"; }
   function command(s) { return "session-guard theme apply " + shellQuote(JSON.stringify(themeOf(s))); }
@@ -690,7 +689,6 @@ function boot() {
   fBar.addEventListener("change", function () { S.bar = fBar.value; sync(); });
   fWidth.addEventListener("input", function () { S.bar_width = parseInt(fWidth.value, 10); sync(); });
   $("f-emoji").addEventListener("change", function () { S.emoji = this.checked; sync(); });
-  $("f-link").addEventListener("change", function () { S.link = this.checked; sync(); });
   Array.prototype.forEach.call(document.querySelectorAll("input[name=termbg]"), function (r) {
     r.addEventListener("change", function () { $("term").setAttribute("data-bg", r.value); });
   });
@@ -739,8 +737,7 @@ function boot() {
       lines.forEach(function (runs) {
         var ln = el("div", { "class": "ln" }, body);
         runs.forEach(function (r) {
-          var host = r.link ? el("u", { title: "Cmd+click (or Ctrl+click) opens this page" }, ln) : ln;
-          var s = el("span", {}, host, r.t);
+          var s = el("span", {}, ln, r.t);
           if (r.role) s.style.color = F.safeColor(S.colors[r.role], DEFAULTS[r.role]);
         });
       });
@@ -749,7 +746,7 @@ function boot() {
   function sync() {
     D.schema.roles.forEach(function (r) { colorIn[r].value = S.colors[r]; colorOut[r].textContent = S.colors[r]; });
     fPreset.value = S.preset; fBar.value = S.bar; fWidth.value = S.bar_width; $("o-width").textContent = S.bar_width;
-    $("f-emoji").checked = S.emoji; $("f-link").checked = S.link;
+    $("f-emoji").checked = S.emoji;
     drawSegs(); drawPreview();
     $("cmd").textContent = F.command(S);
     $("edited").hidden = JSON.stringify(F.themeOf(S)) === initialJson;

@@ -17,7 +17,7 @@
     session-guard theme show               print the theme and a preview
     session-guard theme list               every preset, previewed
     session-guard theme use <preset>       default | ocean | mono | high-contrast | colorblind
-    session-guard theme set <key>=<value>  ok|warn|danger|dim=#rrggbb, bar, bar_width, emoji=on|off, link=on|off,
+    session-guard theme set <key>=<value>  ok|warn|danger|dim=#rrggbb, bar, bar_width, emoji=on|off,
                                            mode, segments=ctx,bar|cost (| starts a new line)
     session-guard theme reset              back to the defaults
     session-guard theme apply '<json>'     set the whole theme from JSON
@@ -43,7 +43,7 @@ import install  # noqa: E402
 import themepicker  # noqa: E402
 import ui  # noqa: E402
 
-KEYS = (*ui.ROLES, "bar", "bar_width", "emoji", "link", "mode", "segments")  # what `theme set` takes
+KEYS = (*ui.ROLES, "bar", "bar_width", "emoji", "mode", "segments")  # what `theme set` takes
 VERSION = "0.1.0"  # keep in step with CHANGELOG.md; the release workflow checks the tag against this
 INSTALL_URL = "https://raw.githubusercontent.com/Swanand58/session-guard/main/install.sh"
 
@@ -133,7 +133,6 @@ def show() -> None:
         print(f"  {role:<9} {ui.paint('██', role, theme)} {theme['colors'][role]}")
     print(f"  bar       {theme['bar']}, {theme['bar_width']} wide")
     print(f"  emoji     {'on' if theme['emoji'] else 'off'}")
-    print(f"  link      {'on' if theme['link'] else 'off'} (ctx opens the session page)")
     print(f"  mode      {theme['mode']}")
     print(f"  segments  {' | '.join(', '.join(line) for line in theme['segments'])}")
     print("\nPreview (14%, 65% and 85% of a 1M window):")
@@ -164,7 +163,7 @@ def theme(args: list) -> None:
                 new["colors"] = {**new.get("colors", {}), key: value}
             elif key == "bar_width":
                 new[key] = int(value) if value.strip().lstrip("-").isdigit() else value
-            elif key in ("emoji", "link"):
+            elif key == "emoji":
                 new[key] = {"on": True, "off": False}.get(value.strip().lower(), value)
             elif key == "segments":
                 new[key] = [[n.strip() for n in line.split(",") if n.strip()] for line in value.split("|")]
