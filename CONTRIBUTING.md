@@ -40,11 +40,17 @@ The tests already do this for you.
 
 ## Releases
 
-1. Change `VERSION` in `cli.py` and add an entry for it to `CHANGELOG.md`.
-2. Merge to `main`.
-3. Tag it and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+Releases are automatic. To make one:
 
-The release workflow checks that the tag matches `VERSION`, runs the tests and
-creates the GitHub release with generated notes. A tag with a hyphen (for
-example `v0.2.0-rc1`) is marked as a pre-release; set `VERSION` to the same
-text (`0.2.0-rc1`) for it. The installer picks up the latest release by itself.
+1. In a pull request, change the version in the `VERSION` file (one line, like
+   `0.2.0`) and add a `## [0.2.0]` section to `CHANGELOG.md` with what changed.
+   A test fails the pull request if the changelog has no section for `VERSION`.
+2. Merge it to `main`.
+
+On every push to `main`, the release workflow reads `VERSION`. If there is no
+tag for that version yet, it runs the tests, takes the release notes from that
+section of `CHANGELOG.md`, and creates the tag (`v0.2.0`) and the GitHub release.
+If the tag already exists, it does nothing, so ordinary merges release nothing.
+A version with a hyphen (for example `0.2.0-rc1`) is marked as a pre-release.
+The installer picks up the latest release by itself. To run the workflow by
+hand, use "Run workflow" on the release workflow in the Actions tab.

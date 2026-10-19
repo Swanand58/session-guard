@@ -44,7 +44,17 @@ import themepicker  # noqa: E402
 import ui  # noqa: E402
 
 KEYS = (*ui.ROLES, "bar", "bar_width", "emoji", "mode", "segments")  # what `theme set` takes
-VERSION = "0.1.0"  # keep in step with CHANGELOG.md; the release workflow checks the tag against this
+
+
+def _version() -> str:
+    """The text of the VERSION file next to this script (the release workflow reads the same file)."""
+    try:
+        return (HERE / "VERSION").read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+VERSION = _version()
 INSTALL_URL = "https://raw.githubusercontent.com/Swanand58/session-guard/main/install.sh"
 
 
