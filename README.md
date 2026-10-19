@@ -128,6 +128,15 @@ down, the prompt goes through normally.
    note left out, it searches the old transcript (up to 5 short matches):
    `python3 ~/.claude/session-guard/recall.py <session-id> "a few words"`
 
+### Folders with several repos
+
+You can start Claude in a plain folder that holds your repos (not a repo
+itself). `/handover` finds every git repo under that folder, at any depth, and
+writes down which repo is where, with its branch. The note stays in the folder
+you started in. `/continue` checks each repo's branch against the note. It
+skips `node_modules`-style folders, hidden folders, and anything inside a repo,
+and stops at 40 repos.
+
 ## Subagents
 
 A subagent starts with a fresh context and has its own transcript, so:

@@ -2,6 +2,7 @@
 """Look things up in an earlier Claude Code session, so a handover note can stay short.
 
     recall.py id                      # id of the current session (newest transcript in this folder)
+    recall.py git                     # branch, changes and recent commits of every git repo under this folder
     recall.py <session-id> "words"    # up to 5 short matches from that session, with timestamps
 
 /handover records the id; after /clear the new session searches the old one only when it
@@ -13,6 +14,7 @@ from __future__ import annotations  # Python 3.9 (macOS default) support
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -21,6 +23,8 @@ from guard import prompt_text
 
 PROJECTS = Path.home() / ".claude" / "projects"
 TOP, PER_MATCH, TOTAL = 5, 400, 2000  # keep lookups cheap: the point is a small new session
+SKIP = {"node_modules", "venv", "__pycache__", "dist", "build", "target"}  # dependency folders: no repos of yours in there
+MAX_REPOS = 40
 
 
 def current_id(cwd: str) -> str | None:
@@ -28,6 +32,44 @@ def current_id(cwd: str) -> str | None:
     folder = PROJECTS / re.sub(r"[^A-Za-z0-9]", "-", cwd)
     files = sorted(folder.glob("*.jsonl"), key=lambda f: f.stat().st_mtime)
     return files[-1].stem if files else None
+
+
+def find_repos(root: Path) -> list:
+    """Every git repo at or under root, at any depth. Does not look inside a repo for more (submodules, vendored copies)."""
+    repos = []
+    for dirpath, dirs, files in os.walk(root):
+        if ".git" in dirs or ".git" in files:  # .git is a file in worktrees and submodules
+            repos.append(Path(dirpath))
+            dirs[:] = []
+        else:
+            dirs[:] = sorted(d for d in dirs if d not in SKIP and not d.startswith("."))
+        # ponytail: walks every folder; started in a huge tree (e.g. home) this is slow. Add a time cap if that bites.
+        if len(repos) >= MAX_REPOS:
+            break
+    return sorted(repos)
+
+
+def git(repo: Path, *args: str) -> str:
+    try:
+        r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=10)
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+
+def repo_report(root: Path) -> str:
+    """Per repo: where it is (relative to root), its branch, what changed, recent commits. For /handover and /continue."""
+    repos = find_repos(root)
+    if not repos:
+        return f"No git repos found under {root}."
+    out = [f"Working folder: {root}", f"Git repos found: {len(repos)}" + (" (stopped looking at the limit)" if len(repos) >= MAX_REPOS else "")]
+    for r in repos:
+        rel = os.path.relpath(r, root)
+        out.append(f"\n## {rel}  (branch: {git(r, 'branch', '--show-current') or 'detached HEAD'})")
+        out.append("Status:\n" + (git(r, "status", "--short") or "clean"))
+        out.append("Diff:\n" + (git(r, "diff", "--stat") or "none"))
+        out.append("Recent commits:\n" + (git(r, "log", "--oneline", "-5") or "none"))
+    return "\n".join(out)
 
 
 def turns(transcript: Path):
@@ -64,6 +106,9 @@ def search(transcript: Path, query: str) -> list:
 def main() -> None:
     if sys.argv[1:] == ["id"]:
         print(current_id(os.getcwd()) or "unknown")
+        return
+    if sys.argv[1:] == ["git"]:
+        print(repo_report(Path(os.getcwd())))
         return
     if len(sys.argv) != 3:
         sys.exit(__doc__)
