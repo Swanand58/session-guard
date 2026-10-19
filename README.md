@@ -1,20 +1,87 @@
 # session-guard
 
-Stops Claude Code sessions from quietly getting expensive.
+A Claude Code hook and status line that warns you when a session gets expensive, so you can hand over to a fresh one in time.
+
+[![test](https://github.com/Swanand58/session-guard/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/Swanand58/session-guard/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](#supported-platforms)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Swanand58/session-guard/main/install.sh | bash
+session-guard status     # check it worked, then restart Claude Code
+```
+
+![The session page in dark mode: one large context number, a bar with the 60%, 80% and 90% warning levels, a context growth chart and a list of the biggest grabs.](docs/images/page-dark.png)
+
+![The same session page in light mode.](docs/images/page-light.png)
+
+![The theme studio on the session page: a live preview of the status line, colour pickers, presets, bar style and which segments to show.](docs/images/theme-studio.png)
+
+## What it does
 
 Every message re-sends the whole session, so a long session costs more per
 message. session-guard:
 
 - **warns you** when a session's context passes 60%, 80% and 90% of the
   model's context window, with the dollar cost so far and the cost of your
-  last message, and **what grew the context** (the biggest grabs)
-- **(optional, Jev)** spots when you start a *new task* in a big session and
-  stops that prompt once, so you can hand over to a fresh session instead
+  last message
+- **names what grew the context** (the biggest grabs: files read, command
+  output, web results, subagent results)
 - **counts subagents**: their cost is in every number, and a subagent that
-  grows past the same levels shows you a warning (it is not stopped)
-- gives you **/handover** (save a short note) and **/continue** (resume from it)
+  grows past the same levels shows you a warning
+- gives you **/handover** (save a short note) and **/continue** (resume from it
+  in a fresh session), and both work from a **folder that holds several git
+  repos**
+- shows a **status line** with a bar, the cost and a hint, with **themes** and a
+  **picker** for the colours and layout
+- writes a **session page** you can open in a browser: context chart, biggest
+  grabs, cost and a theme studio
+- can compare your costs **before and after** installing it (a
+  [report](#benchmark-before-vs-after) from your own numbers)
+- **(optional, Jev, off by default)** spots when you start a *new task* in a big
+  session and holds that prompt back once, so you can hand over instead
 
-Costs use GitHub Copilot AI-credit rates (edit `PRICES` in `guard.py`).
+## How it works, and what it is not
+
+A hook runs on each prompt you send (and after tool calls, to watch subagents).
+It reads the session's transcript on your computer, adds up the tokens and
+prints a warning when a level is passed.
+
+- **It warns. It does not stop, shorten or compact your session.** You decide
+  when to run `/handover`. The one exception is the optional Jev check, which can
+  hold back a single prompt; send it again and it goes through.
+- **Sizes are estimates.** The context size is exact. The split into "what grew
+  it" is an estimate based on text length.
+- **Costs are estimates.** They use the rates in the `PRICES` table in
+  `guard.py` (GitHub Copilot's published rates, with the date they were checked
+  in the comment above it). Rates change and your plan may bill differently, so
+  treat the numbers as a guide, not an invoice. A model it does not know is
+  priced like an expensive one. Edit `PRICES` to match your own rates.
+- **It fails open.** If anything goes wrong, your prompt goes through.
+- It needs token counts in the transcript. See [Troubleshooting](#troubleshooting).
+
+## Privacy
+
+- **It reads** your local Claude Code transcripts (`~/.claude/projects`) and,
+  for the report, Copilot CLI session logs if you have them.
+- **It stores**, under `~/.claude/session-guard/`: a small state file per session
+  (which levels it has warned at, the window size, the last new-task score), a
+  log of numbers only (`events.jsonl`), the report files, and the session pages.
+  The pages hold only numbers, tool names and file base names (`report.py`, not
+  the path), never your prompts, commands, file contents or URLs. `/handover`
+  also writes a note into your project's `.handover/` folder; that note is
+  whatever Claude Code wrote in it, so keep it out of commits.
+- **It sends nothing.** There is no telemetry. The one exception is the optional
+  Jev check, **off by default**: when you turn it on, it sends your last 5
+  prompts and the new one, each cut short, to `api.typesafe.ai`. Check your
+  company's policy before you enable it. The installer and `session-guard update`
+  also download session-guard from GitHub.
+
+## Supported platforms
+
+macOS and Linux are tested in CI (Python 3.9 and the newest Python 3). Windows
+is a manual install only and is not tested; see
+[Manual install](#install) and [Troubleshooting](#troubleshooting).
 
 ## Install
 
@@ -22,7 +89,8 @@ Costs use GitHub Copilot AI-credit rates (edit `PRICES` in `guard.py`).
 curl -fsSL https://raw.githubusercontent.com/Swanand58/session-guard/main/install.sh | bash
 ```
 
-That downloads session-guard to `~/.session-guard` and adds it to
+That downloads the latest release of session-guard to `~/.session-guard` (or
+the newest code on `main` if there is no release yet) and adds it to
 `~/.claude/settings.json` (a backup is saved next to it first). It adds the
 warning hook, a live cost meter in the status line, the `/handover` and
 `/continue` commands, and the `session-guard` command (a link in
@@ -30,15 +98,20 @@ warning hook, a live cost meter in the status line, the `/handover` and
 numbers for the [benchmark](#benchmark-before-vs-after). Restart Claude Code
 afterwards. Check it worked with `session-guard status`.
 
+To install a particular version, set `SESSION_GUARD_REF` to a tag or a branch:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Swanand58/session-guard/main/install.sh | SESSION_GUARD_REF=v0.1.0 bash
+```
+
 If your shell says `session-guard: command not found`, add `~/.local/bin` to
 your PATH (the installer prints the line to add).
 
 ```
-💸 150k ctx · ▰▰▰▰▰▰▰▰▱▱ 75% · ▃▄▅▆▇ · ~4 msgs to 160k · $5.39 · last msg $0.44 · 🧭 same task · /handover soon
+💸 150k ctx · ▰▰▰▰▰▰▰▰▱▱ 75% · ~4 msgs to 160k · $5.39 · last msg $0.44 · 🧭 same task · /handover soon
 ```
 
-The bar shows how full the context window is. The small chart shows how
-context grew over the last few calls. `~4 msgs to 160k` is a guess: how many
+The bar shows how full the context window is. `~4 msgs to 160k` is a guess: how many
 more messages until the next warning level, at your recent pace. See
 [Customize the status line](#customize-the-status-line) for colours and layout.
 
@@ -99,7 +172,8 @@ echo ".handover/" >> .git/info/exclude
 | `session-guard install` | Set up the hooks, status line, `/handover`, `/continue` and the command. Safe to run twice. |
 | `session-guard uninstall [--purge]` | Remove them. `--purge` also deletes its files, reports and logs. |
 | `session-guard update` | Get the latest version. |
-| `session-guard status` | What is installed, when it warns, and whether Jev is on. |
+| `session-guard status` | The version, what is installed, when it warns, and whether Jev is on. |
+| `session-guard version` | Print the version (also `--version`). |
 | `session-guard report before\|after\|compare [--days N]` | Your costs before vs after. See [Benchmark](#benchmark-before-vs-after). |
 | `session-guard recall id` | The id of the current session. |
 | `session-guard recall <id> "words"` | Search an earlier session (up to 5 short matches). |
@@ -263,10 +337,10 @@ A warning also says what made the context grow, so you can change what you do:
 
 - **It is an estimate.** The context size is exact. Every split is not: the
   growth between two calls is shared by the text length of what arrived
-  (Claude's reply without its thinking, tool results, your messages). Read
+  (the model's reply without its thinking, tool results, your messages). Read
   "+38k" as "about 38k".
 - **What you can change comes first.** The list shows tool results (files read,
-  command output, web results, subagent results). Claude's replies and your
+  command output, web results, subagent results). the model's replies and your
   messages are not listed one by one; they appear as a closing "the
   conversation itself is N%" when together they are 10% or more.
 - **Private.** It uses only tool names, file base names (`report.py`, not the
@@ -341,7 +415,7 @@ down, the prompt goes through normally.
 
 ### Folders with several repos
 
-You can start Claude in a plain folder that holds your repos (not a repo
+You can start Claude Code in a plain folder that holds your repos (not a repo
 itself). `/handover` finds every git repo under that folder, at any depth, and
 writes down which repo is where, with its branch. The note stays in the folder
 you started in. `/continue` checks each repo's branch against the note. It
@@ -372,6 +446,10 @@ session-guard test
 
 ## Benchmark: before vs after
 
+**A caution first.** This needs weeks of steady, heavy use and many sessions to
+mean anything. One huge session can distort the averages, and a quiet month
+compared with a busy one tells you nothing. Treat the numbers as a rough guide.
+
 It reads both **Claude Code** (`~/.claude/projects`) and **GitHub Copilot CLI**
 (`~/.copilot/session-state`) sessions. For Copilot CLI it uses the AI credits
 GitHub actually billed, when the session log has them. Copilot CLI only logs
@@ -393,13 +471,13 @@ prints them side by side:
 
 ```
                                            BEFORE        AFTER   CHANGE
-Tokens per session (median)               333,670      210,400     -37% ✓
-Cost per session (avg, $)                    9.89         4.10     -59% ✓
-Cost per message ($)                        0.857        0.410     -52% ✓
+Tokens per session (median)                   ...          ...      ...
+Cost per session (avg, $)                     ...          ...      ...
+Cost per message ($)                          ...          ...      ...
 ...
 ```
 
-(Example numbers.) `session-guard report compare` shows it again later. Results
+`session-guard report compare` shows it again later. Results
 are saved in `~/.claude/session-guard/before.json` and `after.json`.
 
 Compare the **per-session and per-message** numbers: totals depend on how
@@ -427,6 +505,18 @@ roughly a time Jev was wrong.
   session-guard then carries on without it.
 - Only Claude Code shows warnings and the status line. For Copilot CLI,
   `session-guard report` reads its sessions, but it has no live warnings.
+
+## Contributing
+
+Bug reports and small pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Security
+
+session-guard runs local hooks and a status line. To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

@@ -504,6 +504,81 @@ try:
 except SystemExit as e:
     assert e.code == 2
 
+# Version: `version` and `--version` print it, `status` starts with it, the changelog has an entry for it.
+vcli = lambda *a: subprocess.run([sys.executable, "cli.py", *a], env={**os.environ, "HOME": str(Path(tempfile.mkdtemp()))}, capture_output=True, text=True)
+assert re.fullmatch(r"\d+\.\d+\.\d+(-[\w.]+)?", cli.VERSION), cli.VERSION
+for flag in ("version", "--version"):
+    r = vcli(flag)
+    assert r.returncode == 0 and r.stdout == f"session-guard {cli.VERSION}\n", r
+assert vcli("status").stdout.startswith(f"session-guard {cli.VERSION} in "), vcli("status").stdout
+assert f"## [{cli.VERSION}]" in Path("CHANGELOG.md").read_text(encoding="utf-8")
+
+# install.sh, offline: a fake curl answers the release lookup and serves a tarball of this working tree
+# (one top-level folder, as GitHub does). Checks the ref it picks, that SESSION_GUARD_REF skips the lookup,
+# the fall back to main, and the uninstall form.
+import shutil  # noqa: E402
+import tarfile  # noqa: E402
+
+if all(shutil.which(x) for x in ("bash", "tar", "python3", "git")):
+    sh_tmp = Path(tempfile.mkdtemp())
+    sh_tree = sh_tmp / "session-guard-9.9.9"  # what is inside the tarball
+    sh_tarball = sh_tmp / "tree.tar.gz"
+    names = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"], capture_output=True, text=True, check=True).stdout.splitlines()
+    with tarfile.open(sh_tarball, "w:gz") as tar:
+        for name in names:
+            if Path(name).is_file():  # a tracked file that was deleted is not in the tree
+                tar.add(name, arcname=f"{sh_tree.name}/{name}")
+    sh_log = sh_tmp / "curl.log"
+    (sh_tmp / "bin").mkdir()
+    fake_curl = sh_tmp / "bin" / "curl"
+    fake_curl.write_text("""#!/bin/sh
+for url; do :; done  # the last argument is the URL
+echo "$url" >> 'LOG'
+case "$url" in
+  https://api.github.com/repos/Swanand58/session-guard/releases/latest)
+    case "${FAKE_API:-ok}" in
+      ok) echo '{"tag_name":"v9.9.9"}' ;;
+      garbage) echo 'not json' ;;
+      *) exit 22 ;;  # like curl -f on a 404 or a rate limit
+    esac ;;
+  https://github.com/Swanand58/session-guard/archive/*.tar.gz) cat 'TARBALL' ;;
+  *) exit 6 ;;
+esac
+""".replace("LOG", str(sh_log)).replace("TARBALL", str(sh_tarball)))
+    fake_curl.chmod(0o755)
+    sh_env = {k: v for k, v in os.environ.items() if k != "SESSION_GUARD_REF"}
+    sh_env["PATH"] = f"{sh_tmp / 'bin'}{os.pathsep}{sh_env['PATH']}"
+
+    def sh_run(home, *args, **env):
+        sh_log.write_text("")
+        r = subprocess.run(["bash", str(Path("install.sh").resolve()), *args], env={**sh_env, "HOME": str(home), **env},
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        return r, sh_log.read_text().split()
+
+    API = "https://api.github.com/repos/Swanand58/session-guard/releases/latest"
+    ARCHIVE = "https://github.com/Swanand58/session-guard/archive/%s.tar.gz"
+    sh_home = Path(tempfile.mkdtemp())
+    r, asked = sh_run(sh_home)  # default: the latest release
+    assert r.returncode == 0 and asked == [API, ARCHIVE % "v9.9.9"], (r, asked)
+    assert "session-guard: downloaded v9.9.9 to " in r.stdout and "session-guard is installed" in r.stdout, r.stdout
+    assert (sh_home / ".session-guard" / "cli.py").exists() and not (sh_home / ".session-guard" / ".git").exists()
+    sh_cmd = sh_home / ".local" / "bin" / "session-guard"
+    r = subprocess.run([str(sh_cmd), "status"], env={**sh_env, "HOME": str(sh_home)}, capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.startswith(f"session-guard {cli.VERSION} in ") and "warning hook (prompts)   yes" in r.stdout, r
+    (sh_home / ".session-guard" / ".env").write_text("KEEP=1\n")  # a second run updates and keeps your .env
+    r, asked = sh_run(sh_home, SESSION_GUARD_REF="some-branch")  # a ref skips the lookup
+    assert r.returncode == 0 and asked == [ARCHIVE % "some-branch"] and "downloaded some-branch" in r.stdout, (r, asked)
+    assert (sh_home / ".session-guard" / ".env").read_text() == "KEEP=1\n"
+    for broken in ("fail", "garbage"):  # no release yet, rate limit, no network, an odd answer: main
+        r, asked = sh_run(Path(tempfile.mkdtemp()), FAKE_API=broken)
+        assert r.returncode == 0 and asked == [API, ARCHIVE % "main"] and "downloaded main to " in r.stdout, (broken, r, asked)
+    r, asked = sh_run(Path(tempfile.mkdtemp()), SESSION_GUARD_REF="../evil; rm -rf ~")  # nothing is fetched for a bad name
+    assert r.returncode != 0 and asked == [] and "not a valid" in r.stderr, (r, asked)
+    r, asked = sh_run(sh_home, "uninstall", "--purge")  # the documented uninstall form
+    assert r.returncode == 0 and asked == [API, ARCHIVE % "v9.9.9"], (r, asked)
+    assert not (sh_home / ".session-guard").exists() and not sh_cmd.is_symlink() and not (sh_home / ".claude" / "session-guard").exists(), r.stdout
+    assert "with its files" in r.stdout, r.stdout
+
 # theme command, against a temporary HOME: the real state folder is never touched.
 th_home = Path(tempfile.mkdtemp())
 th_file = th_home / ".claude" / "session-guard" / "theme.json"
@@ -657,12 +732,16 @@ if os.name == "posix":
     import time
 
     def drive(keys, home, rows=40, cols=100):
-        """Run `cli.py theme` in a pty, send keys one by one. (output, exit code). Fails, not hangs, after 30 seconds."""
+        """Run `cli.py theme` in a pty, send keys one by one. (output, exit code). Fails, not hangs, after 90 seconds
+        (generous: a loaded CI machine can take many seconds to start Python)."""
         pid, fd = pty.fork()
         if pid == 0:
-            os.execve(sys.executable, [sys.executable, "cli.py", "theme"], {**th_env, "HOME": str(home), "COLORTERM": "truecolor", "TERM": "xterm-256color"})
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-        out, end, closed = b"", time.time() + 30, False
+            try:  # the child must never fall back into running this test file
+                fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))  # before Python starts, so the size is never 0x0
+                os.execve(sys.executable, [sys.executable, "cli.py", "theme"], {**th_env, "HOME": str(home), "COLORTERM": "truecolor", "TERM": "xterm-256color"})
+            finally:
+                os._exit(127)
+        out, end, closed = b"", time.time() + 90, False
 
         def pump(seconds, until=None):
             nonlocal out, closed
@@ -674,12 +753,13 @@ if os.name == "posix":
                     except OSError:
                         chunk = b""
                     out, closed = out + chunk, not chunk
-        pump(20, until=b"Show")  # first screen is up
+        pump(60, until=b"Show")  # first screen is up
+        assert b"Show" in out, f"the picker did not start: {out[-300:]!r}"
         for key in keys:
             os.write(fd, key)
             pump(0.2)
-        pump(20)  # until the picker exits and the terminal closes
-        for _ in range(100):
+        pump(60)  # until the picker exits and the terminal closes
+        for _ in range(400):
             done, status = os.waitpid(pid, os.WNOHANG)
             if done:
                 break

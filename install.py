@@ -170,7 +170,7 @@ def uninstall(purge: bool = False) -> None:
         return
     shutil.rmtree(DATA, ignore_errors=True)
     # Only delete the folder the one-line installer made, never a clone you are developing in.
-    if HERE == Path.home() / ".session-guard":
+    if HERE == (Path.home() / ".session-guard").resolve():  # HERE is resolved, so resolve both (macOS: /var is /private/var)
         shutil.rmtree(HERE, ignore_errors=True)
         print("session-guard is removed, with its files, reports and logs. Restart Claude Code.")
     else:

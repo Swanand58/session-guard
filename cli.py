@@ -4,7 +4,8 @@
     session-guard install                  set up the hooks, status line, /handover and /continue
     session-guard uninstall [--purge]      remove them (--purge also deletes its files, reports and logs)
     session-guard update                   get the latest version
-    session-guard status                   what is installed and how it is set up
+    session-guard status                   what is installed and how it is set up (first line: the version)
+    session-guard version                  print the version (also: --version)
     session-guard report before|after|compare [--days N]
                                            your costs before vs after session-guard
     session-guard recall id                id of the current session
@@ -43,6 +44,7 @@ import themepicker  # noqa: E402
 import ui  # noqa: E402
 
 KEYS = (*ui.ROLES, "bar", "bar_width", "emoji", "link", "mode", "segments")  # what `theme set` takes
+VERSION = "0.1.0"  # keep in step with CHANGELOG.md; the release workflow checks the tag against this
 INSTALL_URL = "https://raw.githubusercontent.com/Swanand58/session-guard/main/install.sh"
 
 
@@ -219,7 +221,7 @@ def status() -> None:
     before = report.data_files()[0]
     jev_on = os.environ.get("SESSION_GUARD_JEV") == "1" and bool(os.environ.get("TYPESAFE_API_KEY"))
     k = lambda ls: " ".join(f"{lvl // 1000}k" for lvl in ls)
-    print(f"session-guard in {HERE}\n")
+    print(f"session-guard {VERSION} in {HERE}\n")
     print(f"  warning hook (prompts)   {yes(has('UserPromptSubmit'))}")
     print(f"  warning hook (subagents) {yes(has('PostToolUse'))}")
     print(f"  status line              {yes(install.ours((settings.get('statusLine') or {}).get('command', ''), 'statusline.py'))}")
@@ -248,6 +250,8 @@ def main(argv: list | None = None) -> None:
         update()
     elif cmd == "status":
         status()
+    elif cmd in ("version", "--version"):
+        print(f"session-guard {VERSION}")
     elif cmd == "report":
         import report
         sys.argv = ["session-guard report", *rest]
