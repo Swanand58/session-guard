@@ -3,7 +3,6 @@
     build(transcript, theme=None)  -> dict   the page's data (ints, numbers, tool names and file base names only)
     render_html(data)              -> str    web/view.html with the data embedded
     write(transcript, theme=None)  -> Path   ~/.claude/session-guard/view/<session id>.html (atomic, owner-only)
-    link(transcript)               -> str    its file:// URL
 
 Never prompt text, commands or file contents: the data comes from guard.read_session and grabs.grabs, which keep none.
 The page makes no network requests. Stdlib only.
@@ -86,10 +85,3 @@ def write(transcript: Path, theme: dict | None = None, session: dict | None = No
         tmp.unlink(missing_ok=True)
     return path
 
-
-def link(transcript: Path) -> str | None:
-    """file:// URL of the transcript's page, or None."""
-    try:
-        return page_path(transcript).as_uri()
-    except ValueError:  # a relative path
-        return None

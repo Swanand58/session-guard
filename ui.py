@@ -99,7 +99,7 @@ def _segments(v):
 
 
 CHECKS = {"preset": _one_of(tuple(PRESETS)), "bar": _one_of(tuple(BARS)), "bar_width": _width,
-          "emoji": _flag, "link": _flag, "mode": _one_of(MODES), "segments": _segments}
+          "emoji": _flag, "mode": _one_of(MODES), "segments": _segments}
 
 
 def _clean(raw, strict: bool) -> tuple:
@@ -142,7 +142,6 @@ def effective(raw: dict) -> dict:
         "bar": raw.get("bar", "blocks"),
         "bar_width": raw.get("bar_width", 10),
         "emoji": raw.get("emoji", True),
-        "link": raw.get("link", True),  # ctx opens the session page (statusline.py)
         "mode": raw.get("mode", "auto"),
         "segments": raw.get("segments", DEFAULT_SEGMENTS),
     }

@@ -5,9 +5,31 @@ from __future__ import annotations  # Python 3.9 (macOS default) support
 import json
 import os
 import tempfile
+import urllib.request
 from pathlib import Path
 
-import guard
+# Safety first, before anything else is imported or run: guard.load_env reads <repo>/.env, which on a developer's machine
+# can hold a real Jev key. A value already in the environment wins, so switch Jev off here. Tests that need it on set
+# both values themselves, use an injected fake, and switch it off again. Nothing in this suite may reach the network.
+os.environ["SESSION_GUARD_JEV"] = "0"
+os.environ.pop("TYPESAFE_API_KEY", None)
+NET_CALLS = []
+
+
+def _no_network(req, *args, **kwargs):
+    NET_CALLS.append(getattr(req, "full_url", str(req)))
+    raise OSError("the test suite must not use the network")
+
+
+urllib.request.urlopen = _no_network  # guard.ask_jev would swallow the error, so the list is checked at the end
+
+
+def jev_off() -> None:
+    os.environ["SESSION_GUARD_JEV"] = "0"
+    os.environ.pop("TYPESAFE_API_KEY", None)
+
+
+import guard  # noqa: E402
 
 
 def transcript(lines: list[dict]) -> Path:
@@ -81,6 +103,18 @@ assert "hookSpecificOutput" not in out, out  # nothing is sent to the subagent
 # The hook itself, with a temporary HOME: quiet for the main session's tool calls, speaks inside a big subagent.
 import subprocess  # noqa: E402
 import sys  # noqa: E402
+
+_real_run = subprocess.run
+
+
+def _run_with_jev_off(*args, **kwargs):  # every process this suite starts must have Jev switched off in its environment
+    env = kwargs.get("env")
+    env = os.environ if env is None else env
+    assert env.get("SESSION_GUARD_JEV") == "0" and "TYPESAFE_API_KEY" not in env, args
+    return _real_run(*args, **kwargs)
+
+
+subprocess.run = _run_with_jev_off
 
 hook_home = Path(tempfile.mkdtemp())
 def run_hook(**extra):
@@ -164,6 +198,7 @@ os.environ["SESSION_GUARD_JEV"] = "1"
 state = {"warned": 500_000}
 guard.decide({"prompt": "q"}, sess(90_000), state, jev=same_task)
 assert state["jev"] == 0.1
+jev_off()
 
 # Status line. Colours are forced on (and the theme is the default one, not the real file) so the checks are the same everywhere.
 import re  # noqa: E402
@@ -175,7 +210,7 @@ os.environ.pop("NO_COLOR", None)
 os.environ["COLORTERM"] = "truecolor"
 T = ui.effective({})
 rd = lambda session, state, theme=T: statusline.render(session, state, theme)
-plain = lambda text: re.sub(r"\033\[[0-9;]*m|\033\]8;;[^\a]*\a", "", text)  # colour codes and OSC 8 links
+plain = lambda text: re.sub(r"\033\[[0-9;]*m", "", text)  # colour codes
 
 assert rd(sess(0), {}) == ""  # nothing before the first reply
 line = rd(sess(150_000), {"jev": 0.1})
@@ -310,6 +345,7 @@ assert guard.price_for("grok-4.7", 250_000) == guard.LONG_CONTEXT["grok-4-7"][1]
 assert guard.price_for("claude-opus-4-8-20260101") == guard.PRICES["opus-4-8"]
 
 # Event log: numbers only.
+os.environ["TYPESAFE_API_KEY"], os.environ["SESSION_GUARD_JEV"] = "k", "1"  # the decisions below use an injected fake, never the network
 events = []
 guard.decide({"prompt": "new"}, sess(90_000), {"warned": 500_000}, jev=new_task, events=events)
 assert [e["event"] for e in events] == ["jev", "block"], events
@@ -319,9 +355,10 @@ events = []
 guard.decide({"prompt": "dup"}, sess(90_000), st, jev=new_task, events=events)
 assert [e["event"] for e in events] == ["override"], events
 events = []
-guard.decide({}, sess(160_000), {}, events=events)
+guard.decide({}, sess(160_000), {}, jev=lambda *a: None, events=events)
 assert events == [{"event": "warn", "level": 160_000, "ctx": 160_000}], events
 assert all("prompt" not in e for e in events)
+jev_off()
 
 # Report: per-session stats inside the period only; subagent files count toward their parent session.
 import report  # noqa: E402
@@ -496,13 +533,87 @@ os.environ["TYPESAFE_API_KEY"] = "typed-key"
 cli.main(["jev", "on"])
 assert "TYPESAFE_API_KEY=typed-key" in (cli.HERE / ".env").read_text()
 sys.stdin, cli.getpass.getpass = real_stdin, real_getpass
-for k in ("TYPESAFE_API_KEY", "SESSION_GUARD_JEV"):
-    os.environ.pop(k, None)  # load_env put them there
+jev_off()  # load_env and the interactive test above put values there
 try:
     cli.main(["nonsense"])
     raise AssertionError("unknown command should exit")
 except SystemExit as e:
     assert e.code == 2
+
+# Version: `version` and `--version` print it, `status` starts with it, the changelog has an entry for it.
+vcli = lambda *a: subprocess.run([sys.executable, "cli.py", *a], env={**os.environ, "HOME": str(Path(tempfile.mkdtemp()))}, capture_output=True, text=True)
+assert re.fullmatch(r"\d+\.\d+\.\d+(-[\w.]+)?", cli.VERSION), cli.VERSION
+for flag in ("version", "--version"):
+    r = vcli(flag)
+    assert r.returncode == 0 and r.stdout == f"session-guard {cli.VERSION}\n", r
+assert vcli("status").stdout.startswith(f"session-guard {cli.VERSION} in "), vcli("status").stdout
+assert f"## [{cli.VERSION}]" in Path("CHANGELOG.md").read_text(encoding="utf-8")
+
+# install.sh, offline: a fake curl answers the release lookup and serves a tarball of this working tree
+# (one top-level folder, as GitHub does). Checks the ref it picks, that SESSION_GUARD_REF skips the lookup,
+# the fall back to main, and the uninstall form.
+import shutil  # noqa: E402
+import tarfile  # noqa: E402
+
+if all(shutil.which(x) for x in ("bash", "tar", "python3", "git")):
+    sh_tmp = Path(tempfile.mkdtemp())
+    sh_tree = sh_tmp / "session-guard-9.9.9"  # what is inside the tarball
+    sh_tarball = sh_tmp / "tree.tar.gz"
+    names = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"], capture_output=True, text=True, check=True).stdout.splitlines()
+    with tarfile.open(sh_tarball, "w:gz") as tar:
+        for name in names:
+            if Path(name).is_file():  # a tracked file that was deleted is not in the tree
+                tar.add(name, arcname=f"{sh_tree.name}/{name}")
+    sh_log = sh_tmp / "curl.log"
+    (sh_tmp / "bin").mkdir()
+    fake_curl = sh_tmp / "bin" / "curl"
+    fake_curl.write_text("""#!/bin/sh
+for url; do :; done  # the last argument is the URL
+echo "$url" >> 'LOG'
+case "$url" in
+  https://api.github.com/repos/Swanand58/session-guard/releases/latest)
+    case "${FAKE_API:-ok}" in
+      ok) echo '{"tag_name":"v9.9.9"}' ;;
+      garbage) echo 'not json' ;;
+      *) exit 22 ;;  # like curl -f on a 404 or a rate limit
+    esac ;;
+  https://github.com/Swanand58/session-guard/archive/*.tar.gz) cat 'TARBALL' ;;
+  *) exit 6 ;;
+esac
+""".replace("LOG", str(sh_log)).replace("TARBALL", str(sh_tarball)))
+    fake_curl.chmod(0o755)
+    sh_env = {k: v for k, v in os.environ.items() if k != "SESSION_GUARD_REF"}
+    sh_env["PATH"] = f"{sh_tmp / 'bin'}{os.pathsep}{sh_env['PATH']}"
+
+    def sh_run(home, *args, **env):
+        sh_log.write_text("")
+        r = subprocess.run(["bash", str(Path("install.sh").resolve()), *args], env={**sh_env, "HOME": str(home), **env},
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        return r, sh_log.read_text().split()
+
+    API = "https://api.github.com/repos/Swanand58/session-guard/releases/latest"
+    ARCHIVE = "https://github.com/Swanand58/session-guard/archive/%s.tar.gz"
+    sh_home = Path(tempfile.mkdtemp())
+    r, asked = sh_run(sh_home)  # default: the latest release
+    assert r.returncode == 0 and asked == [API, ARCHIVE % "v9.9.9"], (r, asked)
+    assert "session-guard: downloaded v9.9.9 to " in r.stdout and "session-guard is installed" in r.stdout, r.stdout
+    assert (sh_home / ".session-guard" / "cli.py").exists() and not (sh_home / ".session-guard" / ".git").exists()
+    sh_cmd = sh_home / ".local" / "bin" / "session-guard"
+    r = subprocess.run([str(sh_cmd), "status"], env={**sh_env, "HOME": str(sh_home)}, capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.startswith(f"session-guard {cli.VERSION} in ") and "warning hook (prompts)   yes" in r.stdout, r
+    (sh_home / ".session-guard" / ".env").write_text("KEEP=1\n")  # a second run updates and keeps your .env
+    r, asked = sh_run(sh_home, SESSION_GUARD_REF="some-branch")  # a ref skips the lookup
+    assert r.returncode == 0 and asked == [ARCHIVE % "some-branch"] and "downloaded some-branch" in r.stdout, (r, asked)
+    assert (sh_home / ".session-guard" / ".env").read_text() == "KEEP=1\n"
+    for broken in ("fail", "garbage"):  # no release yet, rate limit, no network, an odd answer: main
+        r, asked = sh_run(Path(tempfile.mkdtemp()), FAKE_API=broken)
+        assert r.returncode == 0 and asked == [API, ARCHIVE % "main"] and "downloaded main to " in r.stdout, (broken, r, asked)
+    r, asked = sh_run(Path(tempfile.mkdtemp()), SESSION_GUARD_REF="../evil; rm -rf ~")  # nothing is fetched for a bad name
+    assert r.returncode != 0 and asked == [] and "not a valid" in r.stderr, (r, asked)
+    r, asked = sh_run(sh_home, "uninstall", "--purge")  # the documented uninstall form
+    assert r.returncode == 0 and asked == [API, ARCHIVE % "v9.9.9"], (r, asked)
+    assert not (sh_home / ".session-guard").exists() and not sh_cmd.is_symlink() and not (sh_home / ".claude" / "session-guard").exists(), r.stdout
+    assert "with its files" in r.stdout, r.stdout
 
 # theme command, against a temporary HOME: the real state folder is never touched.
 th_home = Path(tempfile.mkdtemp())
@@ -540,7 +651,7 @@ sl_run = lambda **env: subprocess.run([sys.executable, "statusline.py"], capture
 out = sl_run(COLORTERM="truecolor")
 assert out.count("\n") == 2 and "38;2;" in out and "$" in out.split("\n")[1], repr(out)
 assert "38;5;" in sl_run() and "38;2;" not in sl_run()
-assert "\033[" not in sl_run(NO_COLOR="1") and "50k ctx" in sl_run(NO_COLOR="1")  # the link is not a colour: it stays
+assert "\033[" not in sl_run(NO_COLOR="1") and "50k ctx" in sl_run(NO_COLOR="1")  
 th_file.write_text("{{{")
 assert "50k ctx" in sl_run() and sl_run().count("\n") == 1
 assert th_cli("reset").returncode == 0 and not th_file.exists() and th_cli("reset").returncode == 0
@@ -657,12 +768,16 @@ if os.name == "posix":
     import time
 
     def drive(keys, home, rows=40, cols=100):
-        """Run `cli.py theme` in a pty, send keys one by one. (output, exit code). Fails, not hangs, after 30 seconds."""
+        """Run `cli.py theme` in a pty, send keys one by one. (output, exit code). Fails, not hangs, after 90 seconds
+        (generous: a loaded CI machine can take many seconds to start Python)."""
         pid, fd = pty.fork()
         if pid == 0:
-            os.execve(sys.executable, [sys.executable, "cli.py", "theme"], {**th_env, "HOME": str(home), "COLORTERM": "truecolor", "TERM": "xterm-256color"})
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-        out, end, closed = b"", time.time() + 30, False
+            try:  # the child must never fall back into running this test file
+                fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))  # before Python starts, so the size is never 0x0
+                os.execve(sys.executable, [sys.executable, "cli.py", "theme"], {**th_env, "HOME": str(home), "COLORTERM": "truecolor", "TERM": "xterm-256color"})
+            finally:
+                os._exit(127)
+        out, end, closed = b"", time.time() + 90, False
 
         def pump(seconds, until=None):
             nonlocal out, closed
@@ -674,12 +789,13 @@ if os.name == "posix":
                     except OSError:
                         chunk = b""
                     out, closed = out + chunk, not chunk
-        pump(20, until=b"Show")  # first screen is up
+        pump(60, until=b"Show")  # first screen is up
+        assert b"Show" in out, f"the picker did not start: {out[-300:]!r}"
         for key in keys:
             os.write(fd, key)
             pump(0.2)
-        pump(20)  # until the picker exits and the terminal closes
-        for _ in range(100):
+        pump(60)  # until the picker exits and the terminal closes
+        for _ in range(400):
             done, status = os.waitpid(pid, os.WNOHANG)
             if done:
                 break
@@ -698,8 +814,8 @@ if os.name == "posix":
     assert out.index("\x1b[?1049h") < out.index("\x1b[?1049l") < out.index("Saved. Your status line updates on the next message.")
     assert "\x1b[?25l" in out and out.rindex("\x1b[?25h") > out.index("\x1b[?25l") and "38;2;" in out and "› Preset" in plain(out), out[-300:]
     assert [f.name for f in pk_file.parent.iterdir()] == ["theme.json"]
-    # Second visit starts from the saved theme. Nine downs in one write reach "ctx"; Enter hides it; eight more reach [ Save ].
-    out, code = drive([b"\x1b[B" * 9, b"\r", b"\x1b[B" * 8, b"\r"], pk_home)
+    # Second visit starts from the saved theme. Eight downs in one write reach "ctx"; Enter hides it; eight more reach [ Save ].
+    out, code = drive([b"\x1b[B" * 8, b"\r", b"\x1b[B" * 8, b"\r"], pk_home)
     assert code == 0 and json.loads(pk_file.read_text()) == {"preset": "ocean", "segments": [list(ui.SEGMENTS[1:])]}, (code, out[-300:])
     # q, a lone Esc and Ctrl-C cancel without writing anything.
     for key in (b"q", b"\x1b", b"\x03"):
@@ -884,47 +1000,29 @@ try:
 finally:
     grabs.grabs = real_grabs
 
-# Theme key `link`: valid values, the default, the file, `theme set`, the picker row.
-assert ui.validate({"link": False}) == ({"link": False}, None) and "on or off" in ui.validate({"link": "yes"})[1]
-assert ui.effective({})["link"] is True and ui.effective({"link": False})["link"] is False and ui.BAR_WIDTH == (4, 20)
+# Theme: bar width limits; a `link` key from an earlier version is ignored (never a crash), and is no longer a setting.
+assert ui.BAR_WIDTH == (4, 20)
 assert "bar_width" in ui.validate({"bar_width": 21})[1] and "from 4 to 20" in ui.validate({"bar_width": 21})[1]
 lk_home = Path(tempfile.mkdtemp())
 (lk_home / ".claude" / "session-guard").mkdir(parents=True)
 lk_file = lk_home / ".claude" / "session-guard" / "theme.json"
 real_dir, guard.STATE_DIR = guard.STATE_DIR, lk_home / ".claude" / "session-guard"
 try:
-    lk_file.write_text('{"link": false}')
-    assert ui.load()["link"] is False
-    lk_file.write_text('{"link": "x", "emoji": false}')
-    assert ui.load()["link"] is True and ui.load()["emoji"] is False  # a bad value falls back, the rest stays
+    lk_file.write_text('{"link": true, "emoji": false}')
+    assert ui.load() == ui.effective({"emoji": False}) and "link" not in ui.load() and ui.load_raw() == {"emoji": False}
+    lk_file.write_text('{"link": "x"}')
+    assert ui.load() == ui.effective({})
 finally:
     guard.STATE_DIR = real_dir
+assert "link" not in ui.effective({}) and "valid keys" in ui.validate({"link": True})[1]
 th_file.unlink(missing_ok=True)
-assert th_cli("set", "link=off").returncode == 0 and saved()["link"] is False and "link      off" in th_cli("show").stdout
-r = th_cli("set", "link=maybe")
-assert r.returncode != 0 and "on or off" in r.stderr and saved()["link"] is False
-assert th_cli("set", "link=on").returncode == 0 and saved()["link"] is True and "link      on" in th_cli("show").stdout
-assert th_cli("apply", '{"link": false}').returncode == 0 and saved() == {"link": False}
+r = th_cli("set", "link=on")
+assert r.returncode != 0 and "key=value" in r.stderr and not th_file.exists() and "link" not in th_cli("show").stdout
+th_file.write_text('{"preset": "ocean", "link": true}')  # an old file: still loads, and the picker drops the key
+assert "preset    ocean" in th_cli("show").stdout and "link" not in th_cli("show").stdout
 th_file.unlink(missing_ok=True)
-assert tp.ROWS[tp.ROWS.index("emoji") + 1] == "link" and tp.initial_state({})["link"] is True and tp.to_theme(tp.initial_state({})) == {"preset": "default"}
-nolink, _ = press(goto(tp.initial_state({}), "link"), "right")
-assert nolink["link"] is False and tp.to_theme(nolink) == {"preset": "default", "link": False} and press(nolink, " ")[0]["link"] is True
-assert "Clickable ctx   ‹ on ›" in plain(tp.render(tp.initial_state({}), 100)) and "› Clickable ctx   ‹ off ›" in plain(tp.render(goto(nolink, "link"), 100))
-assert "\033]8" not in "".join(tp.preview_lines(tp.initial_state({})))  # the picker's fake sessions have no page
-
-# Status line: ctx is an OSC 8 link when the session has a page and the theme says so; the text stays the same.
-URL = "file:///tmp/p%20q/view/s.html"
-linked = rd({**sess(150_000), "link": URL}, {})
-assert linked.count(f"\033]8;;{URL}\a") == 1 and linked.count("\033]8;;\a") == 1 and linked.index("\033]8;;") < linked.index("150k ctx") < linked.rindex("\033]8;;\a")
-assert plain(linked) == plain(rd(sess(150_000), {})) and "\033]8" not in rd(sess(150_000), {})
-assert "\033]8" not in rd({**sess(150_000), "link": URL}, {}, ui.effective({"link": False}))
-assert "\033]8" not in rd({"context": 0, "total": 0.0, "last_msg": 0.0, "link": URL}, {})  # empty line: no link
-os.environ["NO_COLOR"] = "1"
-try:
-    nc = rd({**sess(150_000), "link": URL}, {})
-    assert nc.startswith(f"\033]8;;{URL}\a") and "\033[" not in nc and plain(nc) == plain(rd(sess(150_000), {}, T)) == plain(linked)
-finally:
-    os.environ.pop("NO_COLOR", None)
+assert "link" not in tp.ROWS and "link" not in tp.initial_state({}) and tp.ROWS[tp.ROWS.index("emoji") + 1] == "seg:ctx"
+assert "Clickable" not in plain(tp.render(tp.initial_state({}), 100)) and "\033]8" not in "".join(tp.preview_lines(tp.initial_state({})))
 
 # The session page (view.py). Synthetic session with a distinctive marker in the prompt, the Bash command and the results;
 # a tool is called "</script>..." (a file name cannot hold a slash, a tool name can).
@@ -975,13 +1073,12 @@ try:
     assert 'name="color-scheme"' in tpl and "prefers-color-scheme: light" in tpl and 'name="viewport"' in tpl
     # Appearance: dark by default whatever the system says; light and dark are driven by data-theme, with auto (no attribute) following the system.
     assert ':root[data-theme="light"]' in tpl and ":root:not([data-theme])" in tpl and tpl.index("localStorage.getItem") < tpl.index("<style>")
-    # write(): the right place, owner-only, atomic, nothing left behind; link() is a file:// URL of it.
+    # write(): the right place, owner-only, atomic, nothing left behind. There is no link(): the status line does not link to the page.
     path = view.write(pv_t)
     assert path == pv_dir / "view" / f"{pv_t.stem}.html" and path.exists() and "session-data" in path.read_text(encoding="utf-8")
     assert os.name != "posix" or (path.stat().st_mode & 0o777 == 0o600), oct(path.stat().st_mode)
     assert [f.name for f in path.parent.iterdir()] == [path.name]
-    url = view.link(pv_t)
-    assert url == path.as_uri() and url.startswith("file:///") and urllib.parse.unquote(urllib.parse.urlparse(url).path) == str(path)
+    assert not hasattr(view, "link")
     old = path.read_text(encoding="utf-8")
     real_replace = os.replace
     def broken(*a):
@@ -1001,80 +1098,22 @@ try:
 finally:
     guard.STATE_DIR = real_dir
 
-# The status line writes the page only when it is missing or older than the transcript (or the theme), and only when the link is on.
+# The status line writes no page (only `session-guard view` does) and no link; an old theme.json holding "link" still works.
 sv_home = Path(tempfile.mkdtemp())
 sv_dir = sv_home / ".claude" / "session-guard"
-sv_page = sv_dir / "view" / f"{pv_t.stem}.html"
 sv_run = lambda **env: subprocess.run([sys.executable, "statusline.py"], capture_output=True, text=True, input=json.dumps(
-    {"session_id": pv_t.stem, "transcript_path": str(pv_t)}), env={**th_env, "HOME": str(sv_home), **env}).stdout
-out = sv_run()
-assert out.startswith(f"\033]8;;{sv_page.as_uri()}\a") and out.count("\033]8;;\a") == 1 and "20k ctx" in plain(out) and sv_page.exists(), repr(out)
-assert os.name != "posix" or sv_page.stat().st_mode & 0o777 == 0o600
-fresh = sv_page.stat().st_mtime_ns
-future = os.stat(pv_t).st_mtime + 100
-os.utime(sv_page, (future, future))
-fresh = sv_page.stat().st_mtime_ns
-assert sv_run() == out and sv_page.stat().st_mtime_ns == fresh  # fresh page: not rewritten
-os.utime(pv_t, (future + 100, future + 100))  # the transcript moved on
-sv_run()
-assert sv_page.stat().st_mtime_ns != fresh and sv_page.stat().st_mtime > future - 1000
-os.utime(sv_page, (future + 200, future + 200)); fresh = sv_page.stat().st_mtime_ns
-sv_dir.mkdir(parents=True, exist_ok=True); (sv_dir / "theme.json").write_text('{"emoji": false}')  # a newer theme also refreshes it
-os.utime(sv_dir / "theme.json", (future + 300, future + 300))
-sv_run()
-assert sv_page.stat().st_mtime_ns != fresh
-# A newer page template or view.py (an update of session-guard) also refreshes an existing page.
-real_dir, guard.STATE_DIR = guard.STATE_DIR, sv_dir
-real_tpl, real_file = view.TEMPLATE, view.__file__
-try:
-    tpl_copy = Path(tempfile.mkdtemp()) / "view.html"; shutil.copy(real_tpl, tpl_copy)
-    code_copy = tpl_copy.with_name("view.py"); shutil.copy(real_file, code_copy)
-    view.TEMPLATE, view.__file__ = tpl_copy, str(code_copy)
-    far = os.stat(sv_page).st_mtime + 1000
-    for name, touched in (("template", tpl_copy), ("code", code_copy)):
-        os.utime(sv_page, (far, far)); os.utime(tpl_copy, (far - 500, far - 500)); os.utime(code_copy, (far - 500, far - 500)); os.utime(pv_t, (far - 500, far - 500))
-        before_page = sv_page.stat().st_mtime_ns
-        assert statusline.page_link(pv_t, {}) == sv_page.as_uri() and sv_page.stat().st_mtime_ns == before_page, name  # both older: untouched
-        os.utime(touched, (far + 500, far + 500))
-        assert statusline.page_link(pv_t, guard.read_session(pv_t)) == sv_page.as_uri() and sv_page.stat().st_mtime_ns != before_page, name  # newer: rewritten
-finally:
-    view.TEMPLATE, view.__file__ = real_tpl, real_file
-    guard.STATE_DIR = real_dir
-# Same text with the link on, off, and with NO_COLOR (which keeps the link).
-(sv_dir / "theme.json").write_text("{}")
-on, nc = sv_run(COLORTERM="truecolor"), sv_run(NO_COLOR="1")
-(sv_dir / "theme.json").write_text('{"link": false}')
-off = sv_run(COLORTERM="truecolor")
-assert "\033]8" in on and "\033]8" in nc and "\033]8" not in off and "\033[" not in nc and plain(on) == plain(off) == plain(nc) and "20k ctx" in off, (on, nc, off)
-# Link off: no page is written. A page that cannot be written: plain text, no link, no error.
-sv_home2 = Path(tempfile.mkdtemp())
-(sv_home2 / ".claude" / "session-guard").mkdir(parents=True)
-(sv_home2 / ".claude" / "session-guard" / "theme.json").write_text('{"link": false}')
-subprocess.run([sys.executable, "statusline.py"], input=json.dumps({"session_id": "z", "transcript_path": str(pv_t)}), capture_output=True, text=True,
-               env={**th_env, "HOME": str(sv_home2)})
-assert not (sv_home2 / ".claude" / "session-guard" / "view").exists()
-sv_home3 = Path(tempfile.mkdtemp())
-(sv_home3 / ".claude" / "session-guard").mkdir(parents=True)
-(sv_home3 / ".claude" / "session-guard" / "view").write_text("a file where the folder should be")
-r = subprocess.run([sys.executable, "statusline.py"], input=json.dumps({"session_id": "z", "transcript_path": str(pv_t)}), capture_output=True, text=True,
-                   env={**th_env, "HOME": str(sv_home3)})
-assert r.returncode == 0 and "20k ctx" in r.stdout and "\033]8" not in r.stdout and not r.stderr, r
-# ...and in process: a broken view.write or a missing view.py gives no link.
-real_write = view.write
-view.write = boom
-try:
-    assert statusline.page_link(pv_t, {}) is None
-finally:
-    view.write = real_write
-sys.modules["view"], saved_view = None, sys.modules["view"]  # `import view` now fails
-try:
-    assert statusline.page_link(pv_t, {}) is None
-finally:
-    sys.modules["view"] = saved_view
+    {"session_id": pv_t.stem, "transcript_path": str(pv_t), "context_window": {"context_window_size": 1_000_000}}), env={**th_env, "HOME": str(sv_home), **env})
+r = sv_run(COLORTERM="truecolor")
+assert r.returncode == 0 and "20k ctx" in plain(r.stdout) and "\033]8" not in r.stdout and not r.stderr, r
+assert not (sv_dir / "view").exists() and sorted(f.name for f in sv_dir.iterdir()) == [f"{pv_t.stem}.json"]  # only the window size is saved
+sv_dir.joinpath("theme.json").write_text('{"link": true, "emoji": false}')
+r = sv_run()
+assert r.returncode == 0 and "20k ctx" in plain(r.stdout) and "💸" not in r.stdout and "\033]8" not in r.stdout and not (sv_dir / "view").exists(), r
+assert "\033[" not in sv_run(NO_COLOR="1").stdout
 # Nothing yet in the session: no output and no page.
 sv_empty = transcript([prompt("hi")])
 assert subprocess.run([sys.executable, "statusline.py"], input=json.dumps({"session_id": "e", "transcript_path": str(sv_empty)}), capture_output=True, text=True,
-                      env={**th_env, "HOME": str(sv_home3)}).stdout == ""
+                      env={**th_env, "HOME": str(sv_home)}).stdout == "" and not (sv_dir / "view").exists()
 
 # session-guard view: temporary HOME, a transcript under its ~/.claude/projects, run from a folder that maps to that project.
 vw_home, vw_cwd = Path(tempfile.mkdtemp()), Path(os.path.realpath(tempfile.mkdtemp()))
@@ -1171,10 +1210,10 @@ if shutil.which("node"):
         assert have == want, (case["ctx"], have, want)
     assert js([{"kind": "lines", "theme": themes[0], "data": cases[0]["data"], "ctx": 0}]) == [[]]  # nothing before the first reply
     link_on = js([{"kind": "lines", "theme": themes[0], "data": cases[0]["data"], "ctx": 140_000}])[0][0][0]
-    assert link_on["link"] is True and link_on["t"] == "💸 140k ctx"
+    assert link_on["t"] == "💸 140k ctx" and "link" not in link_on
     # The command: valid for ui.validate, whatever the layout, and safe in a shell.
     cmd_cases = [{"kind": "cmd", "theme": t, "data": {"schema": d["schema"]}} for t in (
-        ui.effective({}), ui.effective({"preset": "colorblind", "link": False, "emoji": False, "bar_width": 4, "bar": "dots"}),
+        ui.effective({}), ui.effective({"preset": "colorblind", "emoji": False, "bar_width": 4, "bar": "dots"}),
         ui.effective({"colors": {"ok": "#123456"}, "segments": [["hint"], ["ctx", "cost"], ["bar"]]}))]
     for case, cmd in zip(cmd_cases, js(cmd_cases)):
         assert cmd.startswith("session-guard theme apply '") and cmd.endswith("'")
@@ -1184,5 +1223,10 @@ if shutil.which("node"):
     quoted = js([{"kind": "quote", "text": t} for t in ("a'b", "'", "", "it's \"x\" $HOME `y`")])
     assert quoted[0] == "'a'\\''b'" and [subprocess.run(["sh", "-c", f"printf %s {q}"], capture_output=True, text=True).stdout for q in quoted] == ["a'b", "'", "", "it's \"x\" $HOME `y`"]
 
+
+# The suite never touched the network, and Jev is still off in this process (so in every process it started).
+assert NET_CALLS == [], NET_CALLS
+assert os.environ["SESSION_GUARD_JEV"] == "0" and "TYPESAFE_API_KEY" not in os.environ
+subprocess.run = _real_run
 
 print("all good")
