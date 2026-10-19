@@ -5,12 +5,13 @@ Stops Claude Code sessions from quietly getting expensive.
 Every message re-sends the whole session, so a long session costs more per
 message. session-guard:
 
-- **warns you** when a session's context passes 150k, 300k and 500k tokens,
-  with the dollar cost so far and the cost of your last message
+- **warns you** when a session's context passes 60%, 80% and 90% of the
+  model's context window, with the dollar cost so far and the cost of your
+  last message
 - **(optional, Jev)** spots when you start a *new task* in a big session and
   stops that prompt once, so you can hand over to a fresh session instead
 - **counts subagents**: their cost is in every number, and a subagent that
-  grows past the same levels is told to wrap up and report back
+  grows past the same levels shows you a warning (it is not stopped)
 - gives you **/handover** (save a short note) and **/continue** (resume from it)
 
 Costs use GitHub Copilot AI-credit rates (edit `PRICES` in `guard.py`).
@@ -27,7 +28,7 @@ warning hook, a live cost meter in the status line, and the `/handover` and
 `/continue` commands. Restart Claude Code afterwards.
 
 ```
-💸 189k ctx ▰▱▱ · $5.39 · last msg $0.44 · 🧭 same task · /handover soon
+💸 150k ctx ▰▱▱ · $5.39 · last msg $0.44 · 🧭 same task · /handover soon
 ```
 
 - Already have a status line? It keeps showing, above ours.
@@ -66,6 +67,36 @@ echo ".handover/" >> .git/info/exclude
 
 </details>
 
+## Configure
+
+Warnings exist because every message re-sends the whole session. The fuller
+the session, the more each message costs. The *context window* is how much
+the model can hold at once.
+
+By default you get a warning at 60%, 80% and 90% of the window. On a 200k
+window that is 120k, 160k and 180k tokens. On a 1M window it is 600k, 800k
+and 900k. The window size comes from Claude Code's status line. If that is
+missing, session-guard assumes 200k, and switches to 1M once a call goes over
+200k.
+Keep the status line the installer adds: without it, 1M-window users get early warnings until a call passes 200k (or set `SESSION_GUARD_WINDOW`).
+
+Want fewer or later warnings? Set the levels as shares of the window (three
+numbers between 0 and 1, comma-separated):
+
+```
+SESSION_GUARD_LEVELS=0.8,0.9,0.95
+```
+
+If the window size is detected wrongly, set it in tokens:
+
+```
+SESSION_GUARD_WINDOW=1000000
+```
+
+Put these lines in `~/.session-guard/.env` (in a clone: `.env` next to
+`guard.py`) or export them as environment variables. A bad value is ignored
+and the defaults are used.
+
 ## Jev new-task check (optional, off by default)
 
 Add these two lines to `~/.session-guard/.env` (in a clone: `.env` next to
@@ -83,7 +114,8 @@ On macOS with Python from python.org, HTTPS calls fail with
 `/Applications/Python 3.12/Install Certificates.command` once. The Jev check
 then silently does nothing, so run that, or point the hook at Homebrew's `python3`.
 
-Only runs when context is above 80k tokens. It sends your last 5 prompts and
+Only runs when context is above 40% of the window, or 150k tokens, whichever is
+lower (80k on a 200k window). It sends your last 5 prompts and
 the new prompt (truncated) to TypeSafe's API. **Check your
 company's policy before enabling this on work code.** If Jev is slow (>4s) or
 down, the prompt goes through normally.
@@ -103,9 +135,9 @@ A subagent starts with a fresh context and has its own transcript, so:
 - **Cost:** the warnings and the status line add subagent cost to the session
   total. The status line shows their part: `$4.61 (agents $0.67)`. The context
   number stays the main session's own, because that is what gets re-sent.
-- **Size:** if a subagent's own context passes 150k, 300k or 500k tokens, it
-  gets one note per level telling it to finish its step and report back. A
-  subagent cannot hand over, so that is the cheapest way out. This uses a
+- **Size:** if a subagent's own context passes the same levels (60%, 80% and
+  90% of the window), you get one warning per level with its context size and
+  cost. The subagent is not told to stop; it carries on. This uses a
   `PostToolUse` hook, which also runs (and exits straight away) on the main
   session's tool calls.
 - **Report:** `report.py` shows subagent runs and their share of the cost.

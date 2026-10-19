@@ -26,9 +26,10 @@ def render(session: dict, state: dict) -> str:
     ctx = session["context"]
     if not ctx:
         return ""
-    reached = sum(ctx >= lvl for lvl in guard.LEVELS)  # 0..3
-    color = [GREEN, YELLOW, YELLOW, RED][reached]
-    bar = "▰" * reached + "▱" * (len(guard.LEVELS) - reached)
+    lvls = guard.levels(guard.window_for(session, state))
+    reached = sum(ctx >= lvl for lvl in lvls)  # 0..3
+    color = [GREEN, YELLOW, YELLOW, RED][min(reached, 3)]
+    bar = "▰" * reached + "▱" * (len(lvls) - reached)
     parts = [
         f"{color}💸 {ctx / 1000:.0f}k ctx {bar}{RESET}",
         f"${session['total']:.2f}" + (f" (agents ${session['agents']:.2f})" if session.get("agents", 0) >= 0.005 else ""),
@@ -68,6 +69,15 @@ def main() -> None:
             return
         state_file = guard.STATE_DIR / f"{data['session_id']}.json"
         state = json.loads(state_file.read_text()) if state_file.exists() else {}
+        # Save the model's window size for guard.py (the hook input does not have it).
+        window = (data.get("context_window") or {}).get("context_window_size")
+        if isinstance(window, int) and window > 0 and state.get("window") != window:
+            state["window"] = window
+            try:
+                state_file.parent.mkdir(parents=True, exist_ok=True)
+                state_file.write_text(json.dumps(state))
+            except OSError:
+                pass  # still draw the line
         line = render(guard.read_session(transcript), state)
         if line:
             print(line)

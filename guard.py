@@ -3,11 +3,11 @@
 
 Every message re-sends the whole session, so cost per message grows with
 context size. On UserPromptSubmit this hook reads the session transcript and:
-  - warns once each time context crosses a level (see LEVELS)
+  - warns once each time context crosses a level (a share of the model's window, see levels())
   - optionally asks Jev whether the new prompt starts a different task;
     if so, blocks it once and suggests /handover + a new session.
-On PostToolUse inside a subagent it tells the subagent to wrap up when the
-subagent's own context crosses a level.
+On PostToolUse inside a subagent it tells the user (not the subagent, which keeps
+going) when the subagent's own context crosses a level.
 
 Stdlib only. Fails open: any error -> exit 0, the prompt goes through.
 """
@@ -22,10 +22,11 @@ import time
 import urllib.request
 from pathlib import Path
 
-# Context sizes (tokens) that trigger a warning, once each per session.
-LEVELS = [150_000, 300_000, 500_000]
-# Jev new-task check only runs above this context size (below it a stray task is cheap).
-JEV_MIN_CONTEXT = 80_000
+# Warn at these shares of the context window, once each per session. Override: SESSION_GUARD_LEVELS="0.8,0.9,0.95".
+DEFAULT_LEVELS = (0.6, 0.8, 0.9)
+# Jev new-task check only runs above 40% of the window (below it a stray task is cheap), but never
+# above 150k tokens: cost per message depends on absolute tokens, so on a 1M window 400k is already costly.
+JEV_MIN_FRACTION, JEV_MIN_CAP = 0.4, 150_000
 # A wrong block costs the user a retype; a missed one costs a few cents. Err towards letting through.
 JEV_THRESHOLD = 0.8
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
@@ -93,6 +94,29 @@ LONG_CONTEXT = {
 DEFAULT_PRICE = PRICES["opus-5"]  # unknown model: assume expensive rather than cheap
 
 
+def window_for(session: dict, state: dict | None = None) -> int:
+    """Context window (tokens): env SESSION_GUARD_WINDOW, saved by statusline.py, proof from the calls, else 200k."""
+    for w in (os.environ.get("SESSION_GUARD_WINDOW"), (state or {}).get("window")):
+        try:
+            if int(w) > 0:
+                return int(w)
+        except (TypeError, ValueError):
+            pass
+    # A call bigger than 200k can only happen on a 1M window.
+    return 1_000_000 if max(session.get("peak", 0), session["context"]) > 200_000 else 200_000
+
+
+def levels(window: int) -> list[int]:
+    """Warning sizes in tokens. Malformed SESSION_GUARD_LEVELS silently gives the defaults."""
+    try:
+        shares = [float(x) for x in os.environ.get("SESSION_GUARD_LEVELS", "").split(",")]
+        if not all(0 < x <= 1 for x in shares):
+            raise ValueError
+    except ValueError:
+        shares = DEFAULT_LEVELS
+    return [int(window * x) for x in sorted(shares)]
+
+
 def price_for(model: str, context: int = 0) -> tuple:
     m = (model or "").lower().replace(".", "-").replace(" ", "-")
     # Longest key first so "gpt-5-4-mini" wins over "gpt-5-4".
@@ -149,7 +173,7 @@ def read_session(transcript: Path) -> dict:
     """
     seen = set()
     total = last_msg = agents = 0.0
-    context = 0
+    context = peak = 0
     prompts = []
     last_prompt_at = ""
     for e in entries(transcript):
@@ -166,6 +190,7 @@ def read_session(transcript: Path) -> dict:
             agents += call[1]
         else:
             context = call[0]
+            peak = max(peak, context)
         total += call[1]
         last_msg += call[1]
     # Newer Claude Code: one file per subagent, in <session>/subagents/ next to the transcript.
@@ -178,18 +203,18 @@ def read_session(transcript: Path) -> dict:
             total += call[1]
             if last_prompt_at and str(e.get("timestamp") or "") >= last_prompt_at:  # ISO times sort as text
                 last_msg += call[1]
-    return {"context": context, "total": total, "last_msg": last_msg, "agents": agents, "prompts": prompts}
+    return {"context": context, "total": total, "last_msg": last_msg, "agents": agents, "prompts": prompts, "peak": peak}
 
 
 def read_agent(transcript: Path) -> dict:
-    """Context size of a subagent's latest call and its cost so far."""
+    """Context size of a subagent's latest call (and its biggest) and its cost so far."""
     seen = set()
-    context, total = 0, 0.0
+    context, peak, total = 0, 0, 0.0
     for e in entries(transcript):
         call = api_call(e, seen)
         if call:
-            context, total = call[0], total + call[1]
-    return {"context": context, "total": total}
+            context, peak, total = call[0], max(peak, call[0]), total + call[1]
+    return {"context": context, "peak": peak, "total": total}
 
 
 def ask_jev(prompts: list[str], new_prompt: str, api_key: str) -> float | None:
@@ -226,11 +251,13 @@ def decide(hook: dict, session: dict, state: dict, jev=ask_jev, events: list | N
     """Return the hook's JSON output, or None to stay quiet. Mutates state; appends to events."""
     events = [] if events is None else events
     ctx, prompt = session["context"], hook.get("prompt", "")
+    window = window_for(session, state)
+    lvls = levels(window)
     cost = f"~${session['total']:.2f} so far, last message ~${session['last_msg']:.2f}"
 
     # Jev: block a new task once. Sending the same prompt again lets it through.
     key = os.environ.get("TYPESAFE_API_KEY")
-    if key and os.environ.get("SESSION_GUARD_JEV") == "1" and ctx >= JEV_MIN_CONTEXT and session["prompts"]:
+    if key and os.environ.get("SESSION_GUARD_JEV") == "1" and ctx >= min(JEV_MIN_FRACTION * window, JEV_MIN_CAP) and session["prompts"]:
         digest = hashlib.sha256(prompt.encode()).hexdigest()
         if state.get("blocked") == digest:
             events.append({"event": "override", "ctx": ctx})
@@ -251,34 +278,32 @@ def decide(hook: dict, session: dict, state: dict, jev=ask_jev, events: list | N
                 }
 
     # After /compact the context shrinks; forget warnings above the new size so they can fire again.
-    state["warned"] = min(state.get("warned", 0), max([lvl for lvl in LEVELS if lvl <= ctx], default=0))
-    crossed = [lvl for lvl in LEVELS if ctx >= lvl and lvl > state["warned"]]
+    state["warned"] = min(state.get("warned", 0), max([lvl for lvl in lvls if lvl <= ctx], default=0))
+    crossed = [lvl for lvl in lvls if ctx >= lvl and lvl > state["warned"]]
     if crossed:
         state["warned"] = crossed[-1]
         events.append({"event": "warn", "level": crossed[-1], "ctx": ctx})
         return {
-            "systemMessage": f"💸 Session context is {ctx / 1000:.0f}k tokens ({cost}). "
+            "systemMessage": f"💸 Session context is {ctx / 1000:.0f}k tokens ({ctx / window:.0%} of {window / 1000:.0f}k; {cost}). "
             "Every message re-sends all of it. When you finish this step: /handover, then /clear and /continue."
         }
     return None
 
 
 def decide_agent(agent: dict, state: dict, events: list | None = None) -> dict | None:
-    """Same levels as decide(), for a subagent. It cannot hand over, so ask it to wrap up."""
+    """Same levels as decide(), for a subagent. Only the user is told; the subagent is not asked to stop."""
     events = [] if events is None else events
     ctx = agent["context"]
-    crossed = [lvl for lvl in LEVELS if ctx >= lvl and lvl > state.get("warned", 0)]
+    window = window_for(agent)  # a subagent has the session's window; its own state has no "window"
+    crossed = [lvl for lvl in levels(window) if ctx >= lvl and lvl > state.get("warned", 0)]
     if not crossed:
         return None
     state["warned"] = crossed[-1]
     events.append({"event": "agent_warn", "level": crossed[-1], "ctx": ctx})
     return {
-        "hookSpecificOutput": {
-            "hookEventName": "PostToolUse",
-            "additionalContext": f"💸 session-guard: this subagent's context is {ctx / 1000:.0f}k tokens "
-            f"(~${agent['total']:.2f} so far). Every further step re-sends all of it. Finish the step you "
-            "are on, then stop and report what you found and what is still left to do.",
-        }
+        "systemMessage": f"💸 A subagent's context is {ctx / 1000:.0f}k tokens "
+        f"({ctx / window:.0%} of {window / 1000:.0f}k; ~${agent['total']:.2f} so far). "
+        "Every further step it takes re-sends all of it."
     }
 
 
