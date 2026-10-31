@@ -234,7 +234,7 @@ In the palette, move with the arrow keys and press `Enter` to pick. `Esc` goes
 back to the old colour. `#` lets you type your own hex colour. The last visible
 segment cannot be hidden. The picker keeps the order of the segments. To change
 the order, use `theme set segments=...` (below). Under "Show" the picker
-lists every segment (`ctx`, `bar`, `eta`, `cost`, `last`, `jev`, `grab`, `hint`).
+lists every segment (`ctx`, `bar`, `eta`, `cost`, `last`, `cache`, `jev`, `grab`, `hint`).
 
 Without a terminal (in a script, or piped), `session-guard theme` prints the
 current theme and a hint instead. To print it any time:
@@ -281,6 +281,7 @@ status line has no colours at all.
 | `eta` | `~12 msgs to 160k`: tokens left to the next level, divided by how much context grew per message lately. Hidden until there are 2 messages, or if context is not growing. |
 | `cost` | cost so far, with the subagents' part if it is $0.005 or more |
 | `last` | cost of your last message |
+| `cache` | `cache 94% (last miss: ttl_expiry)`: prompt-cache hit rate and the cause of the last miss. Only with [cachekit](#prompt-cache-hit-rate-optional-cachekit). |
 | `jev` | the new-task check (only when Jev is on) |
 | `grab` | `top: Read report.py +38k`: the biggest thing in the context. Only after the first warning level. See [What grew the context](#what-grew-the-context). |
 | `hint` | `/handover soon` or `/handover now` |
@@ -452,6 +453,34 @@ A subagent starts with a fresh context and has its own transcript, so:
 - **Report:** `session-guard report` shows subagent runs and their share of the cost.
 
 Already installed? Run the install command again to add the subagent hook.
+
+## Prompt-cache hit rate (optional, cachekit)
+
+[cachekit](https://github.com/Swanand58/cache-kit) is a local proxy that sees
+every API call and explains why the prompt cache missed. If it is installed and
+the session goes through it, the `cache` segment shows this session's hit rate
+and the cause of its most recent miss:
+
+```
+💸 28k ctx · ▰▰▱▱▱▱▱▱▱▱ 14% · $0.43 · last msg $0.22 · cache 56% (last miss: ttl_expiry)
+```
+
+```bash
+npm install -g https://codeload.github.com/Swanand58/cache-kit/tar.gz/refs/heads/main   # until it is on npm
+cachekit proxy                                    # leave it running
+ANTHROPIC_BASE_URL=http://localhost:8787 claude   # in another terminal
+```
+
+- Without cachekit, or for a session that did not go through the proxy, the
+  segment stays hidden. An older cachekit (npm 0.1.0) shows nothing either.
+- A cold start (`first_call`) is not shown as a miss.
+- session-guard never sets `ANTHROPIC_BASE_URL` for you. If the proxy stops,
+  Claude Code cannot reach the API until you start it again, or open Claude
+  Code without that variable.
+- cachekit's dollar figures use API prices, so they are not shown next to
+  session-guard's.
+- Saved your own segment list? Add `cache` to it, for example
+  `session-guard theme set 'segments=ctx,bar,eta,cost,last,cache,hint'`.
 
 ## Test
 
