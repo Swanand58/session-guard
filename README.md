@@ -467,14 +467,13 @@ recent miss:
 ```
 
 ```bash
-npm install -g https://codeload.github.com/Swanand58/cache-kit/tar.gz/refs/heads/main   # until it is on npm
+npm install -g cachekit-cli                       # the command is cachekit
 cachekit proxy                                    # leave it running
 ANTHROPIC_BASE_URL=http://localhost:8787 claude   # in another terminal
 ```
 
 - Without cachekit, or for a session that did not go through the proxy, the
-  segment stays hidden. So does a cachekit older than commit 24ad733 (this
-  includes npm 0.1.0).
+  segment stays hidden. So does a cachekit older than 0.1.1.
 - A cold start (the first call of the session or of a subagent) is not shown as
   a miss.
 - session-guard never sets `ANTHROPIC_BASE_URL` for you. If the proxy stops,
