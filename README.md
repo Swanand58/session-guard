@@ -473,7 +473,7 @@ ANTHROPIC_BASE_URL=http://localhost:8787 claude   # in another terminal
 ```
 
 - Without cachekit, or for a session that did not go through the proxy, the
-  segment stays hidden. So does a cachekit older than commit 5c5c13c (this
+  segment stays hidden. So does a cachekit older than commit 24ad733 (this
   includes npm 0.1.0).
 - A cold start (the first call of the session or of a subagent) is not shown as
   a miss.
