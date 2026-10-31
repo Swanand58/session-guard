@@ -7,8 +7,8 @@ All notable changes to this project are written here. The format follows
 ## [Unreleased]
 
 ### Added
-- `cache` status line segment: prompt-cache hit rate and the cause of the last
-  miss, from [cachekit](https://github.com/Swanand58/cache-kit) when it is
+- `cache` status line segment: prompt-cache hit rate of the main session's last
+  3 calls and the cause of the last real miss, from [cachekit](https://github.com/Swanand58/cache-kit) when it is
   installed and the session goes through its proxy. Hidden otherwise.
 
 ## [0.1.0]

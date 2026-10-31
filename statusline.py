@@ -52,8 +52,9 @@ def top_grab(session: dict) -> str:
 def cache_text(session_id: str) -> str:
     """Text like 'cache 94% (last miss: ttl_expiry)' from cachekit (github.com/Swanand58/cache-kit).
 
-    Empty when cachekit is not installed, has no data for this session (Claude Code was not started
-    through its proxy), is too old, or fails. Hit rate and cause only: its dollars use API prices, ours don't.
+    The hit rate of the main session's last few calls (not subagents), and the cause of the last real miss
+    (cold starts skipped). Empty when cachekit is not installed, has no data for this session (Claude Code
+    was not started through its proxy), is too old, or fails. No dollars: cachekit's use API prices, ours don't.
     """
     exe = shutil.which("cachekit")
     if not exe:
@@ -62,10 +63,10 @@ def cache_text(session_id: str) -> str:
         r = subprocess.run([exe, "status", "--json", "--session", session_id], stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=1)
         c = json.loads(r.stdout)
-        if not c.get("calls") or c.get("session") != session_id:  # older cachekit showed another session
+        rate, miss = c.get("recent_main_hit_rate"), (c.get("last_real_miss") or {}).get("kind")
+        if not c.get("calls") or c.get("session") != session_id or rate is None:  # older cachekit: no such fields
             return ""
-        miss = (c.get("last_miss") or {}).get("kind")
-        return f"cache {c['hit_rate']:.0%}" + (f" (last miss: {miss})" if miss and miss != "first_call" else "")
+        return f"cache {rate:.0%}" + (f" (last miss: {miss})" if miss else "")
     except Exception:
         return ""
 

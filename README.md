@@ -281,7 +281,7 @@ status line has no colours at all.
 | `eta` | `~12 msgs to 160k`: tokens left to the next level, divided by how much context grew per message lately. Hidden until there are 2 messages, or if context is not growing. |
 | `cost` | cost so far, with the subagents' part if it is $0.005 or more |
 | `last` | cost of your last message |
-| `cache` | `cache 94% (last miss: ttl_expiry)`: prompt-cache hit rate and the cause of the last miss. Only with [cachekit](#prompt-cache-hit-rate-optional-cachekit). |
+| `cache` | `cache 94% (last miss: ttl_expiry)`: prompt-cache hit rate of the last 3 calls and the cause of the last miss. Only with [cachekit](#prompt-cache-hit-rate-optional-cachekit). |
 | `jev` | the new-task check (only when Jev is on) |
 | `grab` | `top: Read report.py +38k`: the biggest thing in the context. Only after the first warning level. See [What grew the context](#what-grew-the-context). |
 | `hint` | `/handover soon` or `/handover now` |
@@ -458,8 +458,9 @@ Already installed? Run the install command again to add the subagent hook.
 
 [cachekit](https://github.com/Swanand58/cache-kit) is a local proxy that sees
 every API call and explains why the prompt cache missed. If it is installed and
-the session goes through it, the `cache` segment shows this session's hit rate
-and the cause of its most recent miss:
+the session goes through it, the `cache` segment shows the cache hit rate of the
+main session's last 3 calls (subagents not counted) and the cause of the most
+recent miss:
 
 ```
 💸 28k ctx · ▰▰▱▱▱▱▱▱▱▱ 14% · $0.43 · last msg $0.22 · cache 56% (last miss: ttl_expiry)
@@ -472,8 +473,10 @@ ANTHROPIC_BASE_URL=http://localhost:8787 claude   # in another terminal
 ```
 
 - Without cachekit, or for a session that did not go through the proxy, the
-  segment stays hidden. An older cachekit (npm 0.1.0) shows nothing either.
-- A cold start (`first_call`) is not shown as a miss.
+  segment stays hidden. So does a cachekit older than commit 5c5c13c (this
+  includes npm 0.1.0).
+- A cold start (the first call of the session or of a subagent) is not shown as
+  a miss.
 - session-guard never sets `ANTHROPIC_BASE_URL` for you. If the proxy stops,
   Claude Code cannot reach the API until you start it again, or open Claude
   Code without that variable.

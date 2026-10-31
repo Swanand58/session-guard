@@ -350,17 +350,19 @@ def ck(out, sleep=0):
     return statusline.cache_text("s1")
 old_path, os.environ["PATH"] = os.environ["PATH"], f"{ck_dir}{os.pathsep}{os.environ['PATH']}"
 try:
-    assert ck({"session": "s1", "calls": 3, "hit_rate": 0.94, "last_miss": {"kind": "ttl_expiry", "ts": 1, "label": "main"}}) == \
-        "cache 94% (last miss: ttl_expiry)"
+    ok = {"session": "s1", "calls": 6, "hit_rate": 0.5, "recent_main_hit_rate": 0.94, "last_miss": {"kind": "first_call"},
+          "last_real_miss": {"kind": "ttl_expiry", "ts": 1, "label": "main"}}
+    assert ck(ok) == "cache 94% (last miss: ttl_expiry)"  # recent main-chain rate; the real miss, not a subagent's cold start
     assert (ck_dir / "args").read_text() == "status --json --session s1"
-    assert ck({"session": "s1", "calls": 1, "hit_rate": 0, "last_miss": {"kind": "first_call"}}) == "cache 0%"  # a cold start is no news
-    assert ck({"session": "s1", "calls": 4, "hit_rate": 0.8, "last_miss": None}) == "cache 80%"
+    assert ck({**ok, "recent_main_hit_rate": 0.8, "last_real_miss": None}) == "cache 80%"
+    assert ck({**ok, "recent_main_hit_rate": None}) == ""  # no main-chain calls yet
     assert ck({"calls": 0}) == ""  # cachekit has nothing for this session: not started through its proxy
     assert ck({"calls": 6, "hit_rate": 0.79}) == ""  # cachekit 0.1.0 reports another session: no "session" key
-    assert ck({"session": "other", "calls": 6, "hit_rate": 0.79}) == ""
+    assert ck({"session": "s1", "calls": 6, "hit_rate": 0.79, "last_miss": None}) == ""  # 33cac2a: no recent_main_hit_rate
+    assert ck({**ok, "session": "other"}) == ""
     assert ck("cachekit: crashed") == ""
     t0 = time.time()
-    assert ck({"session": "s1", "calls": 3, "hit_rate": 0.9}, sleep=3) == "" and time.time() - t0 < 2.5  # 1s timeout
+    assert ck(ok, sleep=3) == "" and time.time() - t0 < 2.5  # 1s timeout
 finally:
     os.environ["PATH"] = old_path
 empty_path = Path(tempfile.mkdtemp())
