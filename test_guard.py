@@ -334,6 +334,44 @@ assert plain(rd(sess(40_000), {}, ui.effective({"segments": [["hint"], ["cost"]]
 full = plain(rd({**sess(150_000), "prompt_ctx": [100_000, 125_000, 150_000]}, {"jev": 0.1}))
 assert full == "💸 150k ctx · ▰▰▰▰▰▰▰▰▱▱ 75% · ~1 msg to 160k · $1.00 · last msg $0.10 · 🧭 same task · /handover soon", full
 
+import time  # noqa: E402
+
+# cachekit segment: only with cachekit on PATH and data for this exact session. Hit rate and miss cause, no dollars; fails open.
+assert plain(rd({**sess(150_000), "cache": "cache 94% (last miss: ttl_expiry)"}, {}, only("last", "cache", "hint"))) == \
+    "last msg $0.10 · cache 94% (last miss: ttl_expiry) · /handover soon"
+ck_dir = Path(tempfile.mkdtemp())
+(ck_dir / "cachekit").write_text(f"#!{sys.executable}\nimport pathlib, sys, time\nd = pathlib.Path(__file__).parent\n"
+                                 "(d / 'args').write_text(' '.join(sys.argv[1:]))\ntime.sleep(float((d / 'sleep').read_text() or 0))\n"
+                                 "print((d / 'out').read_text())\n")
+(ck_dir / "cachekit").chmod(0o755)
+def ck(out, sleep=0):
+    (ck_dir / "out").write_text(out if isinstance(out, str) else json.dumps(out))
+    (ck_dir / "sleep").write_text(str(sleep))
+    return statusline.cache_text("s1")
+old_path, os.environ["PATH"] = os.environ["PATH"], f"{ck_dir}{os.pathsep}{os.environ['PATH']}"
+try:
+    ok = {"session": "s1", "calls": 6, "hit_rate": 0.5, "recent_main_hit_rate": 0.94, "last_miss": {"kind": "first_call"},
+          "last_real_miss": {"kind": "ttl_expiry", "ts": 1, "label": "main"}}
+    assert ck(ok) == "cache 94% (last miss: ttl_expiry)"  # recent main-chain rate; the real miss, not a subagent's cold start
+    assert (ck_dir / "args").read_text() == "status --json --session s1"
+    assert ck({**ok, "recent_main_hit_rate": 0.8, "last_real_miss": None}) == "cache 80%"
+    assert ck({**ok, "recent_main_hit_rate": None}) == ""  # no main-chain calls yet
+    assert ck({"calls": 0}) == ""  # cachekit has nothing for this session: not started through its proxy
+    assert ck({"calls": 6, "hit_rate": 0.79}) == ""  # cachekit 0.1.0 reports another session: no "session" key
+    assert ck({"session": "s1", "calls": 6, "hit_rate": 0.79, "last_miss": None}) == ""  # 33cac2a: no recent_main_hit_rate
+    assert ck({**ok, "session": "other"}) == ""
+    assert ck("cachekit: crashed") == ""
+    t0 = time.time()
+    assert ck(ok, sleep=3) == "" and time.time() - t0 < 2.5  # 1s timeout
+finally:
+    os.environ["PATH"] = old_path
+empty_path = Path(tempfile.mkdtemp())
+os.environ["PATH"], old_path = str(empty_path), os.environ["PATH"]
+try:
+    assert statusline.cache_text("s1") == ""  # not installed
+finally:
+    os.environ["PATH"] = old_path
+
 # Prices: every model resolves to its own row (no shorter key shadows it), names are normalized,
 # long-context tiers apply above the threshold.
 for k in guard.PRICES:
@@ -839,8 +877,8 @@ if os.name == "posix":
     assert out.index("\x1b[?1049h") < out.index("\x1b[?1049l") < out.index("Saved. Your status line updates on the next message.")
     assert "\x1b[?25l" in out and out.rindex("\x1b[?25h") > out.index("\x1b[?25l") and "38;2;" in out and "› Preset" in plain(out), out[-300:]
     assert [f.name for f in pk_file.parent.iterdir()] == ["theme.json"]
-    # Second visit starts from the saved theme. Eight downs in one write reach "ctx"; Enter hides it; eight more reach [ Save ].
-    out, code = drive([b"\x1b[B" * 8, b"\r", b"\x1b[B" * 8, b"\r"], pk_home)
+    # Second visit starts from the saved theme. Eight downs in one write reach "ctx"; Enter hides it; one per segment reach [ Save ].
+    out, code = drive([b"\x1b[B" * 8, b"\r", b"\x1b[B" * len(ui.SEGMENTS), b"\r"], pk_home)
     assert code == 0 and json.loads(pk_file.read_text()) == {"preset": "ocean", "segments": [list(ui.SEGMENTS[1:])]}, (code, out[-300:])
     # q, a lone Esc and Ctrl-C cancel without writing anything.
     for key in (b"q", b"\x1b", b"\x03"):

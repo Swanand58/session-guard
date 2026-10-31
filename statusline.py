@@ -16,6 +16,7 @@ from __future__ import annotations  # Python 3.9 (macOS default) support
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 from itertools import groupby
@@ -48,6 +49,28 @@ def top_grab(session: dict) -> str:
         return ""
 
 
+def cache_text(session_id: str) -> str:
+    """Text like 'cache 94% (last miss: ttl_expiry)' from cachekit (github.com/Swanand58/cache-kit).
+
+    The hit rate of the main session's last few calls (not subagents), and the cause of the last real miss
+    (cold starts skipped). Empty when cachekit is not installed, has no data for this session (Claude Code
+    was not started through its proxy), is too old, or fails. No dollars: cachekit's use API prices, ours don't.
+    """
+    exe = shutil.which("cachekit")
+    if not exe:
+        return ""
+    try:
+        r = subprocess.run([exe, "status", "--json", "--session", session_id], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=1)
+        c = json.loads(r.stdout)
+        rate, miss = c.get("recent_main_hit_rate"), (c.get("last_real_miss") or {}).get("kind")
+        if not c.get("calls") or c.get("session") != session_id or rate is None:  # older cachekit: no such fields
+            return ""
+        return f"cache {rate:.0%}" + (f" (last miss: {miss})" if miss else "")
+    except Exception:
+        return ""
+
+
 def render(session: dict, state: dict, theme: dict | None = None) -> str:
     ctx = session["context"]
     if not ctx:
@@ -71,6 +94,7 @@ def render(session: dict, state: dict, theme: dict | None = None) -> str:
         "eta": eta(session, ctx, lvls),
         "cost": f"${session['total']:.2f}" + (f" (agents ${session['agents']:.2f})" if session.get("agents", 0) >= 0.005 else ""),
         "last": f"last msg ${session['last_msg']:.2f}",
+        "cache": session.get("cache", ""),
         "jev": "",
         "grab": paint(top_grab(session), "dim") if reached and any("grab" in names for names in theme["segments"]) else "",
         "hint": paint("/handover soon", "warn") if reached == 1 else paint("/handover now", "danger") if reached > 1 else "",
@@ -118,6 +142,8 @@ def main() -> None:
                 pass  # still draw the line
         theme = ui.load()
         session = {**guard.read_session(transcript), "transcript": transcript}
+        if any("cache" in names for names in theme["segments"]):
+            session["cache"] = cache_text(data["session_id"])
         line = render(session, state, theme)
         if line:
             print(line)

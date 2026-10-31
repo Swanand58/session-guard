@@ -28,7 +28,7 @@ PRESETS = {  # name -> hex colour per role
 BARS = {"blocks": "▰▱", "solid": "█░", "dots": "●○"}  # filled, empty
 MODES = ("auto", "truecolor", "256")
 BAR_WIDTH = (4, 20)  # fewest and most cells
-SEGMENTS = ("ctx", "bar", "eta", "cost", "last", "jev", "grab", "hint")
+SEGMENTS = ("ctx", "bar", "eta", "cost", "last", "cache", "jev", "grab", "hint")
 DEFAULT_SEGMENTS = [list(SEGMENTS)]  # one line
 
 

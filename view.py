@@ -17,6 +17,7 @@ from pathlib import Path
 
 import grabs
 import guard
+import statusline
 import ui
 
 TEMPLATE = Path(__file__).resolve().parent / "web" / "view.html"
@@ -50,6 +51,7 @@ def build(transcript: Path, theme: dict | None = None, session: dict | None = No
         "cost": {"total": session["total"], "agents": session["agents"], "last_msg": session["last_msg"]},
         "prompt_ctx": session["prompt_ctx"],  # context at the end of each of the last prompts: for the eta text
         "jev": jev if isinstance(jev, (int, float)) and not isinstance(jev, bool) else None,
+        "cache": statusline.cache_text(transcript.stem),  # hit rate and miss cause only, no prompt text
         "baseline": g["baseline"],
         "calls": g["calls"],
         "items": g["items"],

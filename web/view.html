@@ -313,7 +313,7 @@ footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line);
 var Core = (function () {
   var HEX = /^#[0-9a-f]{6}$/i;
   var SEG_HELP = { ctx: "context size", bar: "how full the window is", eta: "messages left to the next level",
-    cost: "cost so far", last: "cost of your last message", jev: "new-task check", grab: "what grew the context most", hint: "/handover hint" };
+    cost: "cost so far", last: "cost of your last message", cache: "prompt-cache hit rate (cachekit)", jev: "new-task check", grab: "what grew the context most", hint: "/handover hint" };
 
   function fmtK(n) { return Math.abs(n) >= 1000 ? Math.round(n / 1000) + "k" : String(Math.round(n)); }
   function fmtDelta(n) {
@@ -362,6 +362,7 @@ var Core = (function () {
     seg.eta = e ? [{ t: e, role: null }] : [];
     seg.cost = [{ t: usd(d.cost.total) + (d.cost.agents >= 0.005 ? " (agents " + usd(d.cost.agents) + ")" : ""), role: null }];
     seg.last = [{ t: "last msg " + usd(d.cost.last_msg), role: null }];
+    seg.cache = d.cache ? [{ t: d.cache, role: null }] : [];
     seg.jev = [];
     if (d.jev !== null && d.jev !== undefined) {
       seg.jev = d.jev >= 0.8 ? [{ t: emoji("🧭") + "new task? " + pct(d.jev), role: "danger" }]
